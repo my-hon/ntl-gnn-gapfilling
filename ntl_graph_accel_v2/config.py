@@ -32,7 +32,7 @@ class GraphConfig:
     num_regions: int = 6               # 象限数量
     natural_breaks: List[float] = field(default_factory=lambda: [
         -float('inf'), 0.001, 0.00325, 0.0065, 0.0125,
-        0.025, 0.1, 0.25, 0.5, 1.0, float('inf')
+        0.025, 0.1, float('inf')
     ])
     sample_per_class: int = 20000      # 每个自然断点类别的采样数
 

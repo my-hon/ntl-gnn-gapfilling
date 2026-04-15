@@ -32,7 +32,7 @@ class DataConfig:
     # 自然断点分箱边界
     natural_breaks: List[float] = field(default_factory=lambda: [
         float('-inf'), 0.001, 0.00325, 0.0065, 0.0125,
-        0.025, 0.1, 0.25, 0.5, 1.0, float('inf')
+        0.025, 0.1, float('inf')
     ])
     # 每个类别采样数
     sample_per_class: int = 20000
