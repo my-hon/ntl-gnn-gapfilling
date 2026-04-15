@@ -7,10 +7,15 @@ GPU加速3D Bresenham算法模块
 """
 
 import numpy as np
-import torch
 import logging
 from typing import Tuple, Optional
 from pathlib import Path
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 logger = logging.getLogger(__name__)
 

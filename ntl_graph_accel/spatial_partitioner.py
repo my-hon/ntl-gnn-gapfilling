@@ -211,8 +211,8 @@ def _worker_process_tile(
     local_positions[:, 1] -= tile.h_start
     local_positions[:, 2] -= tile.w_start
 
-    # 构建图构建器
-    builder = GraphBuilder(config, tile_data, tile_mask)
+    # 构建图构建器（新 GraphBuilder 只接受 config 和 data 两个参数）
+    builder = GraphBuilder(config, tile_data)
 
     # 批量构建子图
     graphs = []
@@ -220,9 +220,10 @@ def _worker_process_tile(
         tc, hc, wc = int(tc), int(hc), int(wc)
         graph = builder.build_single(tc, hc, wc)
         if graph is not None:
-            # 将局部坐标转回全局坐标
-            graph.center_pos[1] += tile.h_start
-            graph.center_pos[2] += tile.w_start
+            # 将局部坐标转回全局坐标（graph 是 dict 格式）
+            if 'position' in graph:
+                graph['position'][0, 1] += tile.h_start
+                graph['position'][0, 2] += tile.w_start
             graphs.append(graph)
 
     # 保存结果
@@ -315,7 +316,15 @@ class ParallelGraphProcessor:
                 'buffer_size': self.config.data.buffer_size,
                 'temporal_buffer': self.config.data.temporal_buffer,
                 'feature_scale': self.config.data.feature_scale,
-                'edge_scale': self.config.data.edge_scale
+                'edge_scale': self.config.data.edge_scale,
+                'ext_range': self.config.data.ext_range,
+                'search_node': self.config.data.search_node,
+                'natural_breaks': self.config.data.natural_breaks,
+                'sample_per_class': self.config.data.sample_per_class,
+                'edge_time': self.config.data.edge_time,
+                'edge_height': self.config.data.edge_height,
+                'edge_width': self.config.data.edge_width,
+                'quality_path': self.config.data.quality_path
             },
             'graph': {
                 'num_nodes': self.config.graph.num_nodes,

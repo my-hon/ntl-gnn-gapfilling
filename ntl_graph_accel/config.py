@@ -6,7 +6,7 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 
 @dataclass
@@ -23,8 +23,27 @@ class DataConfig:
     nan_value: float = float('nan')
     # 节点特征归一化因子（99.9百分位）
     feature_scale: float = 108.3
-    # 边属性归一化因子（2倍默认扩展值）
+    # 边属性归一化因子
     edge_scale: float = 8.0
+    # 时空子立方体提取范围（替代 initial_radius）
+    ext_range: int = 6
+    # 搜索节点数
+    search_node: int = 32
+    # 自然断点分箱边界
+    natural_breaks: List[float] = field(default_factory=lambda: [
+        float('-inf'), 0.001, 0.00325, 0.0065, 0.0125,
+        0.025, 0.1, 0.25, 0.5, 1.0, float('inf')
+    ])
+    # 每个类别采样数
+    sample_per_class: int = 20000
+    # 边属性中时间维度的缩放因子
+    edge_time: int = 50
+    # 边属性中高度维度的缩放因子
+    edge_height: int = 50
+    # 边属性中宽度维度的缩放因子
+    edge_width: int = 50
+    # 数据质量文件路径
+    quality_path: str = ""
 
 
 @dataclass

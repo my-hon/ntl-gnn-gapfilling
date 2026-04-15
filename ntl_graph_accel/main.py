@@ -1,7 +1,11 @@
 """
 主控调度模块
 ============
-整合所有模块，提供统一的命令行入口。
+与参考实现 build_dataset.py 对齐。
+
+支持两种模式：
+  - train: 自然断点采样 -> 构建 -> 每类别保存 pkl
+  - predict: 逐天 NaN 提取 -> 构建 -> 每天保存 pkl
 """
 
 import os
@@ -12,15 +16,16 @@ import logging
 import argparse
 import numpy as np
 from datetime import datetime
+from typing import List, Dict, Any
 
 from .config import Config
 from .data_loader import NTLDataLoader
-from .spatial_partitioner import ParallelGraphProcessor
+from .graph_builder import GraphBuilder
 
 
-def setup_logging(output_dir: str):
+def setup_logging(output_dir):
     """配置日志"""
-    log_file = os.path.join(output_dir, f"graph_build_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    log_file = os.path.join(output_dir, f"build_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -32,186 +37,176 @@ def setup_logging(output_dir: str):
     return logging.getLogger(__name__)
 
 
-def build_missing_graphs(config: Config):
+def _build_graphs_for_positions(builder, positions, desc="构建图"):
     """
-    构建缺失位置的子图（用于推理/填补）。
+    为一组位置构建子图，带进度日志。
     """
-    logger = setup_logging(config.output_dir)
-    logger.info("=" * 60)
-    logger.info("模式: 缺失值填补 - 构建缺失位置子图")
-    logger.info("=" * 60)
-
-    # 1. 加载数据
-    logger.info("[1/4] 加载数据...")
-    t0 = time.time()
-    loader = NTLDataLoader(config)
-    loader.load(path=config.input_path)
-    logger.info(f"数据加载耗时: {time.time()-t0:.1f}s")
-
-    # 2. 获取缺失位置
-    logger.info("[2/4] 识别缺失位置...")
-    positions = loader.get_missing_positions()
-    if len(positions) == 0:
-        logger.warning("未发现缺失位置，无需处理")
-        return
-
-    # 3. 并行构建子图
-    logger.info(f"[3/4] 并行构建子图 ({config.accel.num_workers}进程)...")
-    t1 = time.time()
-    processor = ParallelGraphProcessor(config)
-    graphs = processor.process(
-        data=loader.data,
-        valid_mask=loader.valid_mask,
-        positions=positions,
-        mode="missing"
-    )
-    build_time = time.time() - t1
-    logger.info(f"子图构建耗时: {build_time:.1f}s")
-
-    # 4. 保存结果
-    logger.info("[4/4] 保存结果...")
-    output_path = os.path.join(config.output_dir, "missing_graphs.pkl")
-    with open(output_path, 'wb') as f:
-        pickle.dump(graphs, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    # 统计报告
-    logger.info("=" * 60)
-    logger.info("处理完成!")
-    logger.info(f"  缺失位置总数: {len(positions)}")
-    logger.info(f"  成功构建子图: {len(graphs)}")
-    logger.info(f"  成功率: {len(graphs)/max(len(positions),1):.1%}")
-    logger.info(f"  总耗时: {time.time()-t0:.1f}s")
-    logger.info(f"  构建速度: {len(graphs)/max(build_time,0.001):.0f} 图/秒")
-    logger.info(f"  输出文件: {output_path}")
-    logger.info("=" * 60)
+    graphs = []
+    total = len(positions)
+    for i, (tc, hc, wc) in enumerate(positions):
+        graph = builder.build_single(int(tc), int(hc), int(wc))
+        if graph is not None:
+            graphs.append(graph)
+        if (i + 1) % 10000 == 0:
+            logger.info(f"{desc} 进度: {i+1}/{total}, 已构建: {len(graphs)}")
+    return graphs
 
 
-def build_training_graphs(config: Config):
+def run_train(config):
     """
-    构建训练数据子图（用于模型训练）。
+    训练模式：自然断点采样 -> 构建 -> 每类别保存 pkl。
+    精确复制参考实现的 train_data_generate 逻辑。
     """
     logger = setup_logging(config.output_dir)
     logger.info("=" * 60)
-    logger.info("模式: 训练数据 - 构建有效位置子图")
+    logger.info("v1 - 训练数据模式 (自然断点采样)")
     logger.info("=" * 60)
 
-    # 1. 加载数据
-    logger.info("[1/5] 加载数据...")
+    # 加载数据
+    logger.info("[1/3] 加载并预处理数据...")
     t0 = time.time()
     loader = NTLDataLoader(config)
-    loader.load(path=config.input_path)
-    logger.info(f"数据加载耗时: {time.time()-t0:.1f}s")
-
-    # 2. 获取所有有效位置
-    logger.info("[2/5] 识别有效位置...")
-    all_positions = loader.get_all_valid_positions()
-
-    # 3. 随机采样（论文使用150,000个训练样本）
-    num_samples = min(150000, len(all_positions))
-    logger.info(f"[3/5] 随机采样 {num_samples} 个位置...")
-    rng = np.random.RandomState(config.seed)
-    indices = rng.choice(len(all_positions), size=num_samples, replace=False)
-    positions = all_positions[indices]
-
-    # 4. 并行构建子图
-    logger.info(f"[4/5] 并行构建子图 ({config.accel.num_workers}进程)...")
-    t1 = time.time()
-    processor = ParallelGraphProcessor(config)
-    graphs = processor.process(
-        data=loader.data,
-        valid_mask=loader.valid_mask,
-        positions=positions,
-        mode="all"
+    loader.load(
+        path=config.input_path,
+        quality_path=config.data.quality_path if config.data.quality_path else None,
     )
-    build_time = time.time() - t1
-    logger.info(f"子图构建耗时: {build_time:.1f}s")
 
-    # 5. 划分训练/验证/测试集并保存
-    logger.info("[5/5] 划分数据集并保存...")
-    rng.shuffle(graphs)
-    n = len(graphs)
-    train_end = int(n * 0.6)
-    val_end = int(n * 0.8)
+    # 自然断点采样
+    logger.info("[2/3] 自然断点采样...")
+    sample_results = loader.get_natural_breaks_samples()
 
-    splits = {
-        'train': graphs[:train_end],
-        'val': graphs[train_end:val_end],
-        'test': graphs[val_end:]
-    }
+    # 创建图构建器
+    builder = GraphBuilder(config, loader.data)
 
-    for split_name, split_graphs in splits.items():
-        path = os.path.join(config.output_dir, f"{split_name}_graphs.pkl")
-        with open(path, 'wb') as f:
-            pickle.dump(split_graphs, f, protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info(f"  {split_name}: {len(split_graphs)} 个子图 -> {path}")
+    # 逐类别构建并保存
+    logger.info("[3/3] 逐类别构建子图...")
+    data_cfg = config.data
+    for class_idx, positions in sample_results:
+        if len(positions) == 0:
+            continue
 
-    # 统计报告
+        t1 = time.time()
+        class_graphs = _build_graphs_for_positions(
+            builder, positions,
+            desc=f"类别 {class_idx + 1}"
+        )
+        build_time = time.time() - t1
+
+        # 保存：文件名格式与参考一致
+        file_name = f"graph_{data_cfg.sample_per_class}_{config.graph.search_node}_{class_idx + 1}_forTrain.pkl"
+        file_path = os.path.join(config.output_dir, "train")
+        os.makedirs(file_path, exist_ok=True)
+        save_path = os.path.join(file_path, file_name)
+
+        with open(save_path, 'wb') as f:
+            pickle.dump(class_graphs, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        logger.info(
+            f"类别 {class_idx + 1}: 采样={len(positions)}, "
+            f"有效图={len(class_graphs)}, "
+            f"速度={len(class_graphs)/max(build_time, 0.001):.0f}图/秒, "
+            f"保存={save_path}"
+        )
+
     logger.info("=" * 60)
-    logger.info("处理完成!")
-    logger.info(f"  有效位置总数: {len(all_positions)}")
-    logger.info(f"  采样数量: {num_samples}")
-    logger.info(f"  成功构建: {len(graphs)}")
-    logger.info(f"  训练/验证/测试: {len(splits['train'])}/{len(splits['val'])}/{len(splits['test'])}")
-    logger.info(f"  总耗时: {time.time()-t0:.1f}s")
-    logger.info(f"  构建速度: {len(graphs)/max(build_time,0.001):.0f} 图/秒")
+    logger.info(f"训练数据生成完成! 总耗时={time.time()-t0:.1f}s")
+    logger.info("=" * 60)
+
+
+def run_predict(config):
+    """
+    预测模式：逐天 NaN 提取 -> 构建 -> 每天保存 pkl。
+    精确复制参考实现的 predict_data_generate 逻辑。
+    """
+    logger = setup_logging(config.output_dir)
+    logger.info("=" * 60)
+    logger.info("v1 - 预测数据模式 (逐天 NaN 处理)")
+    logger.info("=" * 60)
+
+    # 加载数据
+    logger.info("[1/3] 加载并预处理数据...")
+    t0 = time.time()
+    loader = NTLDataLoader(config)
+    loader.load(
+        path=config.input_path,
+        quality_path=config.data.quality_path if config.data.quality_path else None,
+    )
+
+    # 逐天 NaN 提取
+    logger.info("[2/3] 逐天 NaN 位置提取...")
+    day_results = loader.get_nan_positions_by_day()
+
+    # 创建图构建器
+    builder = GraphBuilder(config, loader.data)
+
+    # 逐天构建并保存
+    logger.info("[3/3] 逐天构建子图...")
+    data_cfg = config.data
+    for day_num, positions in day_results:
+        if len(positions) == 0:
+            logger.info(f"Day {day_num + 1}: 无 NaN 位置, 跳过")
+            continue
+
+        t1 = time.time()
+        day_graphs = _build_graphs_for_positions(
+            builder, positions,
+            desc=f"Day {day_num + 1}"
+        )
+        build_time = time.time() - t1
+
+        # 保存：文件名格式与参考一致
+        file_name = f"graph_{data_cfg.sample_per_class}_{config.graph.search_node}_forPred_{str(day_num + 1).zfill(3)}.pkl"
+        file_path = os.path.join(config.output_dir, "predict",
+                                  f"{data_cfg.sample_per_class}_{config.graph.search_node}")
+        os.makedirs(file_path, exist_ok=True)
+        save_path = os.path.join(file_path, file_name)
+
+        with open(save_path, 'wb') as f:
+            pickle.dump(day_graphs, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        logger.info(
+            f"Day {day_num + 1}: NaN位置={len(positions)}, "
+            f"有效图={len(day_graphs)}, "
+            f"速度={len(day_graphs)/max(build_time, 0.001):.0f}图/秒"
+        )
+
+    logger.info("=" * 60)
+    logger.info(f"预测数据生成完成! 总耗时={time.time()-t0:.1f}s")
     logger.info("=" * 60)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NTL数据GNN子图加速构建工具",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-使用示例:
-  # 构建缺失位置子图（用于填补）
-  python -m ntl_graph_accel.main --mode missing --input data.npy --output ./output
-
-  # 构建训练数据子图
-  python -m ntl_graph_accel.main --mode training --input data.npy --output ./output
-
-  # 自定义参数
-  python -m ntl_graph_accel.main --mode missing --input data.npy \\
-      --tile-size 128 --workers 8 --use-cache --cache-quant 2
-        """
+        description="NTL GNN 子图构建 (v1 - 与参考实现对齐)"
     )
-
-    parser.add_argument('--mode', type=str, default='missing',
-                        choices=['missing', 'training'],
-                        help='运行模式: missing(缺失填补) 或 training(训练数据)')
-    parser.add_argument('--input', type=str, required=True,
-                        help='输入数据路径 (.npy格式)')
-    parser.add_argument('--output', type=str, default='./output_graphs',
-                        help='输出目录')
-    parser.add_argument('--cache-dir', type=str, default='./graph_cache',
-                        help='缓存目录')
+    parser.add_argument(
+        '--mode', type=str, default='train',
+        choices=['train', 'predict'],
+        help='运行模式: train=自然断点采样训练数据, predict=逐天NaN预测数据'
+    )
+    parser.add_argument('--input', type=str, required=True, help='输入数据路径 (.npy)')
+    parser.add_argument('--output', type=str, default='./output_graphs', help='输出目录')
+    parser.add_argument('--quality', type=str, default='', help='质量标志数据路径 (.npy)')
 
     # 加速参数
-    parser.add_argument('--tile-size', type=int, default=128,
-                        help='空间瓦片大小（像素）')
-    parser.add_argument('--workers', type=int, default=8,
-                        help='并行进程数')
-    parser.add_argument('--use-cuda', action='store_true', default=False,
-                        help='启用CUDA加速')
-    parser.add_argument('--use-cache', action='store_true', default=True,
-                        help='启用缓存复用')
-    parser.add_argument('--no-cache', action='store_true', default=False,
-                        help='禁用缓存')
-    parser.add_argument('--cache-quant', type=int, default=2,
-                        help='缓存量化步长')
+    parser.add_argument('--tile-size', type=int, default=128, help='空间瓦片大小（像素）')
+    parser.add_argument('--workers', type=int, default=8, help='并行进程数')
+    parser.add_argument('--use-cuda', action='store_true', default=False, help='启用CUDA加速')
+    parser.add_argument('--use-cache', action='store_true', default=True, help='启用缓存复用')
+    parser.add_argument('--no-cache', action='store_true', default=False, help='禁用缓存')
+    parser.add_argument('--cache-quant', type=int, default=2, help='缓存量化步长')
 
     # 图构建参数
-    parser.add_argument('--num-nodes', type=int, default=36,
-                        help='图中节点数')
-    parser.add_argument('--initial-radius', type=int, default=4,
-                        help='初始半窗口大小')
-    parser.add_argument('--max-radius', type=int, default=20,
-                        help='最大半窗口大小')
+    parser.add_argument('--search-node', type=int, default=32, help='邻居节点数 (search_node)')
+    parser.add_argument('--ext-range', type=int, default=6, help='子立方体提取范围 (EXT_RANGE)')
+    parser.add_argument('--sample-per-class', type=int, default=20000, help='每类别采样数')
+    parser.add_argument('--edge-scale', type=float, default=8.0, help='边属性归一化因子')
+    parser.add_argument('--edge-time', type=int, default=50, help='有效区域时间缓冲')
+    parser.add_argument('--edge-height', type=int, default=50, help='有效区域高度缓冲')
+    parser.add_argument('--edge-width', type=int, default=50, help='有效区域宽度缓冲')
 
-    # 数据参数
-    parser.add_argument('--buffer-size', type=int, default=50,
-                        help='空间缓冲区大小')
-    parser.add_argument('--temporal-buffer', type=int, default=10,
-                        help='时间缓冲区大小（天数）')
+    # 其他参数
+    parser.add_argument('--seed', type=int, default=0, help='随机种子')
 
     args = parser.parse_args()
 
@@ -219,7 +214,7 @@ def main():
     config = Config()
     config.input_path = args.input
     config.output_dir = args.output
-    config.cache_dir = args.cache_dir
+    config.data.quality_path = args.quality
 
     # 加速配置
     config.accel.tile_size = args.tile_size
@@ -229,19 +224,22 @@ def main():
     config.accel.cache_quantization = args.cache_quant
 
     # 图构建配置
-    config.graph.num_nodes = args.num_nodes
-    config.graph.initial_radius = args.initial_radius
-    config.graph.max_radius = args.max_radius
+    config.graph.search_node = args.search_node
+    config.data.ext_range = args.ext_range
+    config.data.sample_per_class = args.sample_per_class
+    config.data.edge_scale = args.edge_scale
+    config.data.edge_time = args.edge_time
+    config.data.edge_height = args.edge_height
+    config.data.edge_width = args.edge_width
+    config.seed = args.seed
 
-    # 数据配置
-    config.data.buffer_size = args.buffer_size
-    config.data.temporal_buffer = args.temporal_buffer
+    # 设置随机种子
+    np.random.seed(config.seed)
 
-    # 执行
-    if args.mode == 'missing':
-        build_missing_graphs(config)
+    if args.mode == 'train':
+        run_train(config)
     else:
-        build_training_graphs(config)
+        run_predict(config)
 
 
 if __name__ == '__main__':

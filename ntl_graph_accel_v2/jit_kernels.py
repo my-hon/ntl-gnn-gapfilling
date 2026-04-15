@@ -1,12 +1,13 @@
 """
 Numba JIT 核心计算内核（v2）
 ==============================
-将 v1 中 Python 循环密集的计算编译为机器码。
+与参考实现 build_dataset.py 对齐。
 
 关键改动：
-  - _select_nodes: Python for 循环 + list append → Numba JIT（纯数组操作）
-  - _build_edges:  Python for 循环 + dict 查找 → Numba JIT（预分配数组）
-  - _bresenham_trace: 查找表 + Numba 路径过滤（消除 Python 循环）
+  - assign_quadrants_plana: 精确复制参考实现的象限分配逻辑（含边界条件差异）
+  - compute_distances: 计算每个体素到中心的欧氏距离
+  - bresenham_3d: 精确复制参考实现的 Bresenham 3D 直线算法
+  - 移除 v2 的配额选择（改为 Python 层的 round-robin 选择）
 """
 
 import numpy as np
@@ -26,277 +27,423 @@ except ImportError:
 
 
 # ============================================================
-# Numba JIT 内核函数
+# 象限分配 - 精确复制参考实现 assign_quadrants_plana
+# ============================================================
+# 参考实现中各象限的边界条件（>= vs >）不完全一致：
+#
+# 象限1 (offset[0] < 0): 所有4个子情况均使用 >= 和 >=
+# 象限2 (offset[0] > 0): 所有4个子情况均使用 >= 和 >=
+# 象限3 (offset[1] < 0): 子情况1: >=, >=
+#                          子情况2: >=, >
+#                          子情况3: >, >=
+#                          子情况4: >, >
+# 象限4 (offset[1] > 0): 子情况1: >, >
+#                          子情况2: >, >=
+#                          子情况3: >=, >
+#                          子情况4: >=, >=
+# 象限5 (offset[2] < 0): 子情况1: >, >
+#                          子情况2: >, >=
+#                          子情况3: >=, >
+#                          子情况4: >=, >=
+# 象限6 (offset[2] > 0): 子情况1: >=, >=
+#                          子情况2: >=, >
+#                          子情况3: >, >=
+#                          子情况4: >, >
+
+def _assign_quadrants_plana_python(dt, dh, dw):
+    """
+    精确复制参考实现的象限分配逻辑。
+    输入为偏移量 (dt, dh, dw)，返回象限编号 1-6，0 表示未分配。
+    """
+    adt = abs(dt)
+    adh = abs(dh)
+    adw = abs(dw)
+
+    # 象限1: offset[0] < 0, 所有子情况 >=, >=
+    if dt < 0:
+        if adt >= adh and adt >= adw:
+            return 1
+
+    # 象限2: offset[0] > 0, 所有子情况 >=, >=
+    if dt > 0:
+        if adt >= adh and adt >= adw:
+            return 2
+
+    # 象限3: offset[1] < 0
+    if dh < 0:
+        if dt > 0 and dw > 0:
+            # 子情况1: >=, >=
+            if adh >= adt and adh >= adw:
+                return 3
+        elif dt > 0 and dw <= 0:
+            # 子情况2: >=, >
+            if adh >= adt and adh > adw:
+                return 3
+        elif dt <= 0 and dw > 0:
+            # 子情况3: >, >=
+            if adh > adt and adh >= adw:
+                return 3
+        elif dt <= 0 and dw <= 0:
+            # 子情况4: >, >
+            if adh > adt and adh > adw:
+                return 3
+
+    # 象限4: offset[1] > 0
+    if dh > 0:
+        if dt > 0 and dw > 0:
+            # 子情况1: >, >
+            if adh > adt and adh > adw:
+                return 4
+        elif dt > 0 and dw <= 0:
+            # 子情况2: >, >=
+            if adh > adt and adh >= adw:
+                return 4
+        elif dt <= 0 and dw > 0:
+            # 子情况3: >=, >
+            if adh >= adt and adh > adw:
+                return 4
+        elif dt <= 0 and dw <= 0:
+            # 子情况4: >=, >=
+            if adh >= adt and adh >= adw:
+                return 4
+
+    # 象限5: offset[2] < 0
+    if dw < 0:
+        if dt > 0 and dh > 0:
+            # 子情况1: >, >
+            if adw > adt and adw > adh:
+                return 5
+        elif dt > 0 and dh <= 0:
+            # 子情况2: >, >=
+            if adw > adt and adw >= adh:
+                return 5
+        elif dt <= 0 and dh > 0:
+            # 子情况3: >=, >
+            if adw >= adt and adw > adh:
+                return 5
+        elif dt <= 0 and dh <= 0:
+            # 子情况4: >=, >=
+            if adw >= adt and adw >= adh:
+                return 5
+
+    # 象限6: offset[2] > 0
+    if dw > 0:
+        if dt > 0 and dh > 0:
+            # 子情况1: >=, >=
+            if adw >= adt and adw >= adh:
+                return 6
+        elif dt > 0 and dh <= 0:
+            # 子情况2: >=, >
+            if adw >= adt and adw > adh:
+                return 6
+        elif dt <= 0 and dh > 0:
+            # 子情况3: >, >=
+            if adw > adt and adw >= adh:
+                return 6
+        elif dt <= 0 and dh <= 0:
+            # 子情况4: >, >
+            if adw > adt and adw > adh:
+                return 6
+
+    return 0
+
+
+def assign_quadrants_plana(data_array):
+    """
+    对整个子立方体计算象限分类数组。
+    返回与 data_array 同形状的 uint8 数组，值 0=未分配, 1-6=象限。
+    中心点 (0,0,0) 偏移保持为 0。
+    """
+    ct = data_array.shape[0] // 2
+    ch = data_array.shape[1] // 2
+    cw = data_array.shape[2] // 2
+    quad_class_arr = np.zeros(data_array.shape, dtype=np.uint8)
+
+    for x in range(data_array.shape[0]):
+        for y in range(data_array.shape[1]):
+            for z in range(data_array.shape[2]):
+                dt = x - ct
+                dh = y - ch
+                dw = z - cw
+                if dt == 0 and dh == 0 and dw == 0:
+                    continue
+                quad_class_arr[x, y, z] = _assign_quadrants_plana_python(dt, dh, dw)
+
+    return quad_class_arr
+
+
+# ============================================================
+# Numba JIT 加速版本
 # ============================================================
 
 if HAS_NUMBA:
 
     @njit(cache=True)
-    def _get_region_id(dt, dh, dw):
-        """根据偏移方向确定区域编号 (0-5)"""
-        adt, adh, adw = abs(dt), abs(dh), abs(dw)
+    def _assign_quadrant_single(dt, dh, dw):
+        """
+        Numba 版本的象限分配，精确复制参考实现边界条件。
+        返回 1-6，0 表示未分配。
+        """
+        adt = abs(dt)
+        adh = abs(dh)
+        adw = abs(dw)
 
-        if adt >= adh and adt >= adw:
-            primary = 0
-            sign = dt
-        elif adh >= adt and adh >= adw:
-            primary = 1
-            sign = dh
-        else:
-            primary = 2
-            sign = dw
+        # 象限1: dt < 0, 所有子情况 >=, >=
+        if dt < 0:
+            if adt >= adh and adt >= adw:
+                return 1
 
-        return primary * 2 + (1 if sign < 0 else 0)
+        # 象限2: dt > 0, 所有子情况 >=, >=
+        if dt > 0:
+            if adt >= adh and adt >= adw:
+                return 2
+
+        # 象限3: dh < 0
+        if dh < 0:
+            if dt > 0 and dw > 0:
+                if adh >= adt and adh >= adw:
+                    return 3
+            elif dt > 0 and dw <= 0:
+                if adh >= adt and adh > adw:
+                    return 3
+            elif dt <= 0 and dw > 0:
+                if adh > adt and adh >= adw:
+                    return 3
+            elif dt <= 0 and dw <= 0:
+                if adh > adt and adh > adw:
+                    return 3
+
+        # 象限4: dh > 0
+        if dh > 0:
+            if dt > 0 and dw > 0:
+                if adh > adt and adh > adw:
+                    return 4
+            elif dt > 0 and dw <= 0:
+                if adh > adt and adh >= adw:
+                    return 4
+            elif dt <= 0 and dw > 0:
+                if adh >= adt and adh > adw:
+                    return 4
+            elif dt <= 0 and dw <= 0:
+                if adh >= adt and adh >= adw:
+                    return 4
+
+        # 象限5: dw < 0
+        if dw < 0:
+            if dt > 0 and dh > 0:
+                if adw > adt and adw > adh:
+                    return 5
+            elif dt > 0 and dh <= 0:
+                if adw > adt and adw >= adh:
+                    return 5
+            elif dt <= 0 and dh > 0:
+                if adw >= adt and adw > adh:
+                    return 5
+            elif dt <= 0 and dh <= 0:
+                if adw >= adt and adw >= adh:
+                    return 5
+
+        # 象限6: dw > 0
+        if dw > 0:
+            if dt > 0 and dh > 0:
+                if adw >= adt and adw >= adh:
+                    return 6
+            elif dt > 0 and dh <= 0:
+                if adw >= adt and adw > adh:
+                    return 6
+            elif dt <= 0 and dh > 0:
+                if adw > adt and adw >= adh:
+                    return 6
+            elif dt <= 0 and dh <= 0:
+                if adw > adt and adw > adh:
+                    return 6
+
+        return 0
 
     @njit(cache=True)
-    def _select_nodes_numba(
-        valid_cube,      # (ct_size, ch_size, cw_size) bool
-        cube_data,       # (ct_size, ch_size, cw_size) float32
-        num_nodes,       # int
-        num_regions,     # int
-    ):
+    def compute_distances_numba(data_array):
         """
-        Numba 加速的节点选择。
-        替代 v1 中的 Python for 循环 + list append + dict。
-
-        Returns
-        -------
-        node_offsets : (N, 3) int32
-        node_features : (N,) float32
-        region_ids : (N,) int32
-        actual_num_nodes : int
+        Numba 加速的距离计算。
+        返回 (distances_arr, offset_arr)
+        distances_arr: (T,H,W) float32 - 每个体素到中心的欧氏距离
+        offset_arr: (T,H,W,3) int8 - 每个体素到中心的偏移量
         """
-        ct_size, ch_size, cw_size = valid_cube.shape
-        ct = ct_size // 2
-        ch = ch_size // 2
-        cw = cw_size // 2
+        ct = data_array.shape[0] // 2
+        ch = data_array.shape[1] // 2
+        cw = data_array.shape[2] // 2
+        T, H, W = data_array.shape
 
-        # 第一遍：收集所有有效像素及其距离
-        max_valid = ct_size * ch_size * cw_size
-        valid_dt = np.empty(max_valid, dtype=np.int32)
-        valid_dh = np.empty(max_valid, dtype=np.int32)
-        valid_dw = np.empty(max_valid, dtype=np.int32)
-        valid_dist = np.empty(max_valid, dtype=np.float32)
-        valid_count = 0
+        distances_arr = np.zeros((T, H, W), dtype=np.float32)
+        offset_arr = np.zeros((T, H, W, 3), dtype=np.int8)
 
-        for t in range(ct_size):
-            for h in range(ch_size):
-                for w in range(cw_size):
-                    if valid_cube[t, h, w]:
-                        dt = t - ct
-                        dh = h - ch
-                        dw = w - cw
-                        valid_dt[valid_count] = dt
-                        valid_dh[valid_count] = dh
-                        valid_dw[valid_count] = dw
-                        valid_dist[valid_count] = np.sqrt(
-                            float(dt * dt + dh * dh + dw * dw)
-                        )
-                        valid_count += 1
+        for x in range(T):
+            for y in range(H):
+                for z in range(W):
+                    dt = x - ct
+                    dh = y - ch
+                    dw = z - cw
+                    offset_arr[x, y, z, 0] = dt
+                    offset_arr[x, y, z, 1] = dh
+                    offset_arr[x, y, z, 2] = dw
+                    distances_arr[x, y, z] = np.sqrt(
+                        float(dt * dt + dh * dh + dw * dw)
+                    )
+        return distances_arr, offset_arr
 
-        if valid_count == 0:
-            return (np.zeros((0, 3), dtype=np.int32),
-                    np.zeros(0, dtype=np.float32),
-                    np.zeros(0, dtype=np.int32), 0)
+    @njit(cache=True)
+    def assign_quadrants_numba(data_array):
+        """
+        Numba 加速的象限分类数组计算。
+        返回 (T,H,W) uint8 数组。
+        """
+        ct = data_array.shape[0] // 2
+        ch = data_array.shape[1] // 2
+        cw = data_array.shape[2] // 2
+        T, H, W = data_array.shape
+        quad_class_arr = np.zeros((T, H, W), dtype=np.uint8)
 
-        # 第二遍：按距离排序（插入排序，对小数组足够快且 Numba 友好）
-        order = np.arange(valid_count, dtype=np.int32)
-        for i in range(1, valid_count):
+        for x in range(T):
+            for y in range(H):
+                for z in range(W):
+                    dt = x - ct
+                    dh = y - ch
+                    dw = z - cw
+                    if dt == 0 and dh == 0 and dw == 0:
+                        continue
+                    quad_class_arr[x, y, z] = _assign_quadrant_single(dt, dh, dw)
+
+        return quad_class_arr
+
+    @njit(cache=True)
+    def sort_indices_by_distance_numba(distances_arr):
+        """
+        Numba 加速的距离排序。
+        返回按距离排序的索引列表 (N, 3) int32。
+        """
+        T, H, W = distances_arr.shape
+        total = T * H * W
+
+        # 展平
+        flat_dist = np.empty(total, dtype=np.float32)
+        flat_x = np.empty(total, dtype=np.int32)
+        flat_y = np.empty(total, dtype=np.int32)
+        flat_z = np.empty(total, dtype=np.int32)
+
+        idx = 0
+        for x in range(T):
+            for y in range(H):
+                for z in range(W):
+                    flat_dist[idx] = distances_arr[x, y, z]
+                    flat_x[idx] = x
+                    flat_y[idx] = y
+                    flat_z[idx] = z
+                    idx += 1
+
+        # 插入排序（对小数组足够快且 Numba 友好）
+        order = np.arange(total, dtype=np.int32)
+        for i in range(1, total):
             key = order[i]
             j = i - 1
-            while j >= 0 and valid_dist[order[j]] > valid_dist[key]:
+            while j >= 0 and flat_dist[order[j]] > flat_dist[key]:
                 order[j + 1] = order[j]
                 j -= 1
             order[j + 1] = key
 
-        # 第三遍：按区域配额选择节点
-        quotas = np.zeros(num_regions, dtype=np.int32)
-        q, rem = divmod(num_nodes, num_regions)
-        for i in range(num_regions):
-            quotas[i] = q + (1 if i < rem else 0)
+        sorted_indices = np.empty((total, 3), dtype=np.int32)
+        for i in range(total):
+            sorted_indices[i, 0] = flat_x[order[i]]
+            sorted_indices[i, 1] = flat_y[order[i]]
+            sorted_indices[i, 2] = flat_z[order[i]]
 
-        region_counts = np.zeros(num_regions, dtype=np.int32)
-
-        # 预分配输出
-        out_offsets = np.zeros((num_nodes, 3), dtype=np.int32)
-        out_features = np.zeros(num_nodes, dtype=np.float32)
-        out_regions = np.zeros(num_nodes, dtype=np.int32)
-        selected = 0
-
-        # 严格配额阶段
-        for idx in range(valid_count):
-            if selected >= num_nodes:
-                break
-            i = order[idx]
-            dt = valid_dt[i]
-            dh = valid_dh[i]
-            dw = valid_dw[i]
-            rid = _get_region_id(dt, dh, dw)
-
-            if region_counts[rid] < quotas[rid]:
-                out_offsets[selected, 0] = dt
-                out_offsets[selected, 1] = dh
-                out_offsets[selected, 2] = dw
-                out_features[selected] = cube_data[dt + ct, dh + ch, dw + cw]
-                out_regions[selected] = rid
-                region_counts[rid] += 1
-                selected += 1
-
-        # 放宽配额阶段（补满）
-        if selected < num_nodes:
-            for idx in range(valid_count):
-                if selected >= num_nodes:
-                    break
-                i = order[idx]
-                dt = valid_dt[i]
-                dh = valid_dh[i]
-                dw = valid_dw[i]
-                # 检查是否已选
-                already = False
-                for k in range(selected):
-                    if (out_offsets[k, 0] == dt and
-                        out_offsets[k, 1] == dh and
-                        out_offsets[k, 2] == dw):
-                        already = True
-                        break
-                if not already:
-                    out_offsets[selected, 0] = dt
-                    out_offsets[selected, 1] = dh
-                    out_offsets[selected, 2] = dw
-                    out_features[selected] = cube_data[dt + ct, dh + ch, dw + cw]
-                    out_regions[selected] = _get_region_id(dt, dh, dw)
-                    selected += 1
-
-        return (out_offsets[:selected],
-                out_features[:selected],
-                out_regions[:selected],
-                selected)
+        return sorted_indices
 
     @njit(cache=True)
-    def _build_edges_numba(
-        node_offsets,    # (N, 3) int32
-        valid_cube,      # (ct_size, ch_size, cw_size) bool
-        lut_array,       # (2R+1, 2R+1, 2R+1, max_len, 3) int16
-        lut_lengths,     # (2R+1, 2R+1, 2R+1) int16
-        lut_radius,      # int
-    ):
+    def count_quadrant_valid_numba(quad_class_arr, data_is_nan):
         """
-        Numba 加速的边构建。
-        替代 v1 中的 Python for 循环 + dict 查找。
-
-        Returns
-        -------
-        edge_src : (E,) int64
-        edge_dst : (E,) int64
-        edge_attrs : (E, 3) float32
-        num_edges : int
+        统计每个象限中非 NaN 的有效像素数量。
+        返回 (6,) int32 数组，索引 0 对应象限 1。
         """
-        N = node_offsets.shape[0]
-        R = lut_radius
-        ct = valid_cube.shape[0] // 2
-        ch = valid_cube.shape[1] // 2
-        cw = valid_cube.shape[2] // 2
-        ct_size = valid_cube.shape[0]
-        ch_size = valid_cube.shape[1]
-        cw_size = valid_cube.shape[2]
-
-        # 构建偏移量 → 节点索引的查找表
-        # 偏移范围: [-R, R]，用 (dt+R, dh+R, dw+R) 作为索引
-        lut_size = 2 * R + 1
-        offset_lut = np.full((lut_size, lut_size, lut_size), -1, dtype=np.int32)
-        for i in range(N):
-            dt = node_offsets[i, 0]
-            dh = node_offsets[i, 1]
-            dw = node_offsets[i, 2]
-            if 0 <= dt + R < lut_size and 0 <= dh + R < lut_size and 0 <= dw + R < lut_size:
-                offset_lut[dt + R, dh + R, dw + R] = i
-
-        # 预分配边数组（最大边数 = N-1 个非中心节点，每个最多 1 条边 + 1 自环）
-        max_edges = 2 * N
-        edge_src = np.zeros(max_edges, dtype=np.int64)
-        edge_dst = np.zeros(max_edges, dtype=np.int64)
-        edge_attrs = np.zeros((max_edges, 3), dtype=np.float32)
-        num_edges = 0
-
-        for i in range(N):
-            dt = node_offsets[i, 0]
-            dh = node_offsets[i, 1]
-            dw = node_offsets[i, 2]
-
-            # 跳过中心节点
-            if dt == 0 and dh == 0 and dw == 0:
-                continue
-
-            # 查找 Bresenham 路径
-            li = dt + R
-            lj = dh + R
-            lk = dw + R
-            path_len = lut_lengths[li, lj, lk]
-
-            first_valid = -1  # -1 表示未找到
-
-            if path_len > 0:
-                for m in range(path_len):
-                    pt = int(lut_array[li, lj, lk, m, 0])
-                    ph = int(lut_array[li, lj, lk, m, 1])
-                    pw = int(lut_array[li, lj, lk, m, 2])
-
-                    # 检查是否在有效范围内
-                    gt = pt + ct
-                    gh = ph + ch
-                    gw = pw + cw
-                    if gt < 0 or gt >= ct_size or gh < 0 or gh >= ch_size or gw < 0 or gw >= cw_size:
-                        break  # 越界
-
-                    if not valid_cube[gt, gh, gw]:
-                        break  # 遇到 NaN，截断
-
-                    # 检查该位置是否是已选节点
-                    if 0 <= pt + R < lut_size and 0 <= ph + R < lut_size and 0 <= pw + R < lut_size:
-                        node_idx = offset_lut[pt + R, ph + R, pw + R]
-                        if node_idx >= 0:
-                            first_valid = node_idx
-                            break
-
-            # 添加边
-            if first_valid >= 0:
-                edge_src[num_edges] = i
-                edge_dst[num_edges] = first_valid
-                # 边属性：当前节点偏移 - 目标节点偏移
-                edge_attrs[num_edges, 0] = dt - node_offsets[first_valid, 0]
-                edge_attrs[num_edges, 1] = dh - node_offsets[first_valid, 1]
-                edge_attrs[num_edges, 2] = dw - node_offsets[first_valid, 2]
-                num_edges += 1
-            else:
-                # 无遮挡，直接连向中心节点
-                edge_src[num_edges] = i
-                edge_dst[num_edges] = 0
-                edge_attrs[num_edges, 0] = float(dt)
-                edge_attrs[num_edges, 1] = float(dh)
-                edge_attrs[num_edges, 2] = float(dw)
-                num_edges += 1
-
-        return (edge_src[:num_edges],
-                edge_dst[:num_edges],
-                edge_attrs[:num_edges],
-                num_edges)
-
-    @njit(cache=True)
-    def _count_region_valid_numba(valid_cube, num_regions):
-        """Numba 加速的区域有效像素计数"""
-        ct_size, ch_size, cw_size = valid_cube.shape
-        ct = ct_size // 2
-        ch = ch_size // 2
-        cw = cw_size // 2
-        counts = np.zeros(num_regions, dtype=np.int32)
-
-        for t in range(ct_size):
-            for h in range(ch_size):
-                for w in range(cw_size):
-                    if valid_cube[t, h, w]:
-                        rid = _get_region_id(t - ct, h - ch, w - cw)
-                        counts[rid] += 1
+        counts = np.zeros(6, dtype=np.int32)
+        T, H, W = quad_class_arr.shape
+        for x in range(T):
+            for y in range(H):
+                for z in range(W):
+                    q = quad_class_arr[x, y, z]
+                    if q > 0 and not data_is_nan[x, y, z]:
+                        counts[q - 1] += 1
         return counts
+
+    @njit(cache=True)
+    def bresenham_3d_numba(start, end):
+        """
+        Numba 版本的 3D Bresenham 直线算法。
+        精确复制参考实现的逻辑。
+        返回路径点数组 (N, 3) int32，包含起点和终点。
+        """
+        x1, y1, z1 = int(start[0]), int(start[1]), int(start[2])
+        x2, y2, z2 = int(end[0]), int(end[1]), int(end[2])
+
+        # 预分配最大可能长度
+        max_len = max(abs(x2 - x1), abs(y2 - y1), abs(z2 - z1)) + 1
+        points = np.empty((max_len, 3), dtype=np.int32)
+        points[0] = [x1, y1, z1]
+
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        dz = abs(z2 - z1)
+        xs = 1 if x2 > x1 else -1
+        ys = 1 if y2 > y1 else -1
+        zs = 1 if z2 > z1 else -1
+
+        count = 1
+
+        if dx >= dy and dx >= dz:
+            p1 = 2 * dy - dx
+            p2 = 2 * dz - dx
+            while x1 != x2:
+                x1 += xs
+                if p1 >= 0:
+                    y1 += ys
+                    p1 -= 2 * dx
+                if p2 >= 0:
+                    z1 += zs
+                    p2 -= 2 * dx
+                p1 += 2 * dy
+                p2 += 2 * dz
+                points[count] = [x1, y1, z1]
+                count += 1
+        elif dy >= dx and dy >= dz:
+            p1 = 2 * dx - dy
+            p2 = 2 * dz - dy
+            while y1 != y2:
+                y1 += ys
+                if p1 >= 0:
+                    x1 += xs
+                    p1 -= 2 * dy
+                if p2 >= 0:
+                    z1 += zs
+                    p2 -= 2 * dy
+                p1 += 2 * dx
+                p2 += 2 * dz
+                points[count] = [x1, y1, z1]
+                count += 1
+        else:
+            p1 = 2 * dy - dz
+            p2 = 2 * dx - dz
+            while z1 != z2:
+                z1 += zs
+                if p1 >= 0:
+                    y1 += ys
+                    p1 -= 2 * dz
+                if p2 >= 0:
+                    x1 += xs
+                    p2 -= 2 * dz
+                p1 += 2 * dy
+                p2 += 2 * dx
+                points[count] = [x1, y1, z1]
+                count += 1
+
+        return points[:count]
 
 
 # ============================================================
@@ -305,129 +452,108 @@ if HAS_NUMBA:
 
 else:
 
-    def _get_region_id(dt, dh, dw):
-        adt, adh, adw = abs(dt), abs(dh), abs(dw)
-        if adt >= adh and adt >= adw:
-            return 0 if dt >= 0 else 1
-        elif adh >= adt and adh >= adw:
-            return 2 if dh >= 0 else 3
-        else:
-            return 4 if dw >= 0 else 5
+    def compute_distances_numba(data_array):
+        """纯 Python 回退的距离计算"""
+        ct = data_array.shape[0] // 2
+        ch = data_array.shape[1] // 2
+        cw = data_array.shape[2] // 2
+        T, H, W = data_array.shape
 
-    def _select_nodes_numba(valid_cube, cube_data, num_nodes, num_regions):
-        """纯 Python 回退（与 v1 逻辑一致）"""
-        ct = valid_cube.shape[0] // 2
-        ch = valid_cube.shape[1] // 2
-        cw = valid_cube.shape[2] // 2
+        distances_arr = np.zeros((T, H, W), dtype=np.float32)
+        offset_arr = np.zeros((T, H, W, 3), dtype=np.int8)
 
-        valid_ts, valid_hs, valid_ws = np.where(valid_cube)
-        if len(valid_ts) == 0:
-            return (np.zeros((0, 3), dtype=np.int32),
-                    np.zeros(0, dtype=np.float32),
-                    np.zeros(0, dtype=np.int32), 0)
+        for x in range(T):
+            for y in range(H):
+                for z in range(W):
+                    dt = x - ct
+                    dh = y - ch
+                    dw = z - cw
+                    offset_arr[x, y, z] = [dt, dh, dw]
+                    distances_arr[x, y, z] = np.sqrt(dt**2 + dh**2 + dw**2)
+        return distances_arr, offset_arr
 
-        dt = valid_ts - ct
-        dh = valid_hs - ch
-        dw = valid_ws - cw
-        distances = np.sqrt(dt**2 + dh**2 + dw**2)
-        sort_idx = np.argsort(distances)
+    def assign_quadrants_numba(data_array):
+        """纯 Python 回退的象限分类"""
+        return assign_quadrants_plana(data_array)
 
-        q, rem = divmod(num_nodes, num_regions)
-        quotas = [q + 1 if i < rem else q for i in range(num_regions)]
-        region_counts = [0] * num_regions
+    def sort_indices_by_distance_numba(distances_arr):
+        """纯 Python 回退的距离排序"""
+        T, H, W = distances_arr.shape
+        indices = []
+        dists = []
+        for x in range(T):
+            for y in range(H):
+                for z in range(W):
+                    dists.append(distances_arr[x, y, z])
+                    indices.append((x, y, z))
+        pairs = list(zip(dists, indices))
+        pairs.sort(key=lambda p: p[0])
+        return np.array([p[1] for p in pairs], dtype=np.int32)
 
-        offsets, features, regions = [], [], []
-        for idx in sort_idx:
-            if len(offsets) >= num_nodes:
-                break
-            d = (int(valid_ts[idx] - ct), int(valid_hs[idx] - ch), int(valid_ws[idx] - cw))
-            rid = _get_region_id(*d)
-            if region_counts[rid] < quotas[rid]:
-                offsets.append(d)
-                features.append(cube_data[valid_ts[idx], valid_hs[idx], valid_ws[idx]])
-                regions.append(rid)
-                region_counts[rid] += 1
-
-        if len(offsets) < num_nodes:
-            for idx in sort_idx:
-                if len(offsets) >= num_nodes:
-                    break
-                d = (int(valid_ts[idx] - ct), int(valid_hs[idx] - ch), int(valid_ws[idx] - cw))
-                if d not in offsets:
-                    offsets.append(d)
-                    features.append(cube_data[valid_ts[idx], valid_hs[idx], valid_ws[idx]])
-                    regions.append(_get_region_id(*d))
-
-        n = len(offsets)
-        return (np.array(offsets, dtype=np.int32),
-                np.array(features, dtype=np.float32),
-                np.array(regions, dtype=np.int32), n)
-
-    def _build_edges_numba(node_offsets, valid_cube, lut_array, lut_lengths, lut_radius):
-        """纯 Python 回退"""
-        N = len(node_offsets)
-        R = lut_radius
-        ct = valid_cube.shape[0] // 2
-        ch = valid_cube.shape[1] // 2
-        cw = valid_cube.shape[2] // 2
-
-        offset_to_idx = {}
-        for i in range(N):
-            offset_to_idx[tuple(node_offsets[i])] = i
-
-        src_list, dst_list, attr_list = [], [], []
-        for i in range(N):
-            dt, dh, dw = int(node_offsets[i, 0]), int(node_offsets[i, 1]), int(node_offsets[i, 2])
-            if dt == 0 and dh == 0 and dw == 0:
-                continue
-
-            lut_i = dt + R
-            lut_j = dh + R
-            lut_k = dw + R
-            path_len = int(lut_lengths[lut_i, lut_j, lut_k])
-            first_valid = -1
-
-            if path_len > 0:
-                for m in range(path_len):
-                    pt = int(lut_array[lut_i, lut_j, lut_k, m, 0])
-                    ph = int(lut_array[lut_i, lut_j, lut_k, m, 1])
-                    pw = int(lut_array[lut_i, lut_j, lut_k, m, 2])
-                    gt, gh, gw = pt + ct, ph + ch, pw + cw
-                    if not (0 <= gt < valid_cube.shape[0] and
-                            0 <= gh < valid_cube.shape[1] and
-                            0 <= gw < valid_cube.shape[2]):
-                        break
-                    if not valid_cube[gt, gh, gw]:
-                        break
-                    key = (pt, ph, pw)
-                    if key in offset_to_idx:
-                        first_valid = offset_to_idx[key]
-                        break
-
-            if first_valid >= 0:
-                src_list.append(i)
-                dst_list.append(first_valid)
-                attr_list.append(node_offsets[i] - node_offsets[first_valid])
-            else:
-                src_list.append(i)
-                dst_list.append(0)
-                attr_list.append(node_offsets[i].astype(np.float32))
-
-        n = len(src_list)
-        if n == 0:
-            return (np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64),
-                    np.zeros((0, 3), dtype=np.float32), 0)
-        return (np.array(src_list, dtype=np.int64),
-                np.array(dst_list, dtype=np.int64),
-                np.array(attr_list, dtype=np.float32), n)
-
-    def _count_region_valid_numba(valid_cube, num_regions):
-        ct = valid_cube.shape[0] // 2
-        ch = valid_cube.shape[1] // 2
-        cw = valid_cube.shape[2] // 2
-        counts = np.zeros(num_regions, dtype=np.int32)
-        ts, hs, ws = np.where(valid_cube)
-        for i in range(len(ts)):
-            rid = _get_region_id(int(ts[i]) - ct, int(hs[i]) - ch, int(ws[i]) - cw)
-            counts[rid] += 1
+    def count_quadrant_valid_numba(quad_class_arr, data_is_nan):
+        """纯 Python 回退的象限计数"""
+        counts = np.zeros(6, dtype=np.int32)
+        T, H, W = quad_class_arr.shape
+        for x in range(T):
+            for y in range(H):
+                for z in range(W):
+                    q = quad_class_arr[x, y, z]
+                    if q > 0 and not data_is_nan[x, y, z]:
+                        counts[q - 1] += 1
         return counts
+
+    def bresenham_3d_numba(start, end):
+        """纯 Python 回退的 Bresenham 3D"""
+        x1, y1, z1 = int(start[0]), int(start[1]), int(start[2])
+        x2, y2, z2 = int(end[0]), int(end[1]), int(end[2])
+        points = [(x1, y1, z1)]
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        dz = abs(z2 - z1)
+        xs = 1 if x2 > x1 else -1
+        ys = 1 if y2 > y1 else -1
+        zs = 1 if z2 > z1 else -1
+
+        if dx >= dy and dx >= dz:
+            p1 = 2 * dy - dx
+            p2 = 2 * dz - dx
+            while x1 != x2:
+                x1 += xs
+                if p1 >= 0:
+                    y1 += ys
+                    p1 -= 2 * dx
+                if p2 >= 0:
+                    z1 += zs
+                    p2 -= 2 * dx
+                p1 += 2 * dy
+                p2 += 2 * dz
+                points.append((x1, y1, z1))
+        elif dy >= dx and dy >= dz:
+            p1 = 2 * dx - dy
+            p2 = 2 * dz - dy
+            while y1 != y2:
+                y1 += ys
+                if p1 >= 0:
+                    x1 += xs
+                    p1 -= 2 * dy
+                if p2 >= 0:
+                    z1 += zs
+                    p2 -= 2 * dy
+                p1 += 2 * dx
+                p2 += 2 * dz
+                points.append((x1, y1, z1))
+        else:
+            p1 = 2 * dy - dz
+            p2 = 2 * dx - dz
+            while z1 != z2:
+                z1 += zs
+                if p1 >= 0:
+                    y1 += ys
+                    p1 -= 2 * dz
+                if p2 >= 0:
+                    x1 += xs
+                    p2 -= 2 * dz
+                p1 += 2 * dy
+                p2 += 2 * dx
+                points.append((x1, y1, z1))
+        return np.array(points, dtype=np.int32)
