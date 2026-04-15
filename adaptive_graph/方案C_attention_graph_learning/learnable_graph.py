@@ -666,8 +666,10 @@ class GraphStructureLearner(nn.Module):
         # ---- 3. 边构建 ----
         # 只使用 value 作为节点特征（第4维）
         node_feat_for_edge = selected_features[:, :, -1:]  # (B, K, 1)
+        # 注意：不传 selected_indices，因为 node_feat_for_edge 和 selected_offsets
+        # 已经是 gather 后的 K 个选中节点，直接在 K 个节点上构建边
         adj_matrix, edge_weights, edge_index = self.edge_builder(
-            node_feat_for_edge, selected_offsets, selected_indices
+            node_feat_for_edge, selected_offsets, selected_indices=None
         )
 
         # ---- 4. 计算正则化损失 ----
