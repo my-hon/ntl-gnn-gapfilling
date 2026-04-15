@@ -460,14 +460,15 @@ class LearnableEdgeBuilder(nn.Module):
         k = min(self.knn_k, num_selected - 1)
         if k > 0:
             # 对每个节点，保留相似度最高的 K 个邻居
-            _, knn_indices = torch.topk(similarity, k=k + 1, dim=-1)  # +1 包含自身
+            _, knn_indices = torch.topk(similarity, k=k + 1, dim=-1)  # (B, K, k+1)
             # 创建 KNN 掩码
             knn_mask = torch.zeros_like(similarity, dtype=torch.bool)
             batch_range = torch.arange(batch_size, device=similarity.device).unsqueeze(1).unsqueeze(2)
             node_range = torch.arange(num_selected, device=similarity.device).unsqueeze(0).unsqueeze(2)
+            # knn_indices: (B, K, k+1) → scatter 到 (B, K, K) 的 dim=2
             knn_mask.scatter_(
-                1,
-                knn_indices.unsqueeze(2).expand(-1, -1, num_selected),
+                2,
+                knn_indices,
                 True,
             )
             # 应用 KNN 掩码
