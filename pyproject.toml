@@ -3,7 +3,7 @@ name = "ntl-graph-accel"
 version = "1.0.0"
 description = "GNN-based Nighttime Light data gap-filling with accelerated subgraph generation"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "NTL-GNN Research" }
@@ -13,14 +13,15 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.10",
 ]
 
 dependencies = [
-    # ---- PyTorch (CUDA 12.4) ----
-    "torch>=2.6.0,<2.7.0",
-    "torchvision>=0.21.0,<0.22.0",
-    "torchaudio>=2.6.0,<2.7.0",
+    # ---- PyTorch (CUDA 12.1, 兼容 CUDA 12.3 运行时) ----
+    # 注意: CUDA 12.3 无官方 PyTorch 预编译版本，使用 cu121 向前兼容
+    "torch>=2.4.0,<2.6.0",
+    "torchvision>=0.19.0,<0.21.0",
+    "torchaudio>=2.4.0,<2.6.0",
 
     # ---- PyG (PyTorch Geometric) ----
     "torch_geometric",
@@ -30,9 +31,12 @@ dependencies = [
     "torch_spline_conv",
 
     # ---- 数据处理 ----
-    "numpy>=1.26.0",
-    "scipy>=1.12.0",
-    "pandas>=2.2.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "pandas>=2.1.0",
+
+    # ---- JIT 加速 ----
+    "numba>=0.58.0",
 
     # ---- 可视化与日志 ----
     "tqdm>=4.66.0",
@@ -45,7 +49,7 @@ dev = [
     "mypy>=1.10.0",
 ]
 viz = [
-    "matplotlib>=3.9.0",
+    "matplotlib>=3.8.0",
     "seaborn>=0.13.0",
 ]
 
@@ -60,53 +64,56 @@ ntl-graph-build = "ntl_graph_accel.main:main"
 # 开启 uv 项目管理
 managed = true
 
-# ---- PyTorch CUDA 12.4 索引 ----
-# PyTorch 的 CUDA wheel 托管在官方独立索引上，需要显式声明
+# ---- PyTorch CUDA 12.1 索引 ----
+# PyTorch 官方未提供 CUDA 12.3 预编译版本。
+# CUDA 12.1 构建的 PyTorch 可在 CUDA 12.3 运行时上正常运行（NVIDIA 向前兼容性）。
+# PyTorch 2.4.x / 2.5.x 同时支持 cu121 和 cu124。
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
 explicit = true
 
 # ---- PyG 索引 ----
-# PyG 的 wheel 与 PyTorch 版本强绑定，需要从 data.pyg.org 安装匹配版本
+# PyG 的 wheel 与 PyTorch 版本强绑定，需要从 data.pyg.org 安装匹配版本。
 # 注意:
 #   1. URL 中的 torch 版本需与 dependencies 中的 torch 版本对应
 #   2. format = "flat" 是关键！data.pyg.org 的页面是纯文件列表而非 PEP 503 标准索引，
 #      不加此选项 uv 会按 PEP 503 解析导致 403 Forbidden
+#   3. PyTorch 2.6+ 不再提供 cu121 版本，因此 dependencies 限制 torch<2.6.0
 [[tool.uv.index]]
-name = "pyg-cu124"
-url = "https://data.pyg.org/whl/torch-2.6.0+cu124.html"
+name = "pyg-cu121"
+url = "https://data.pyg.org/whl/torch-2.5.0+cu121.html"
 explicit = true
 format = "flat"
 
 # ---- 源指定：告诉 uv 从哪个索引安装哪些包 ----
 [tool.uv.sources]
-# PyTorch 核心包从 CUDA 12.4 索引安装（仅 Linux/Windows，macOS 回退 PyPI）
+# PyTorch 核心包从 CUDA 12.1 索引安装（仅 Linux/Windows，macOS 回退 PyPI）
 torch = [
-    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torchvision = [
-    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torchaudio = [
-    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 # PyG 及其扩展包从 PyG 索引安装（仅 Linux/Windows）
 torch_geometric = [
-    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pyg-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torch_scatter = [
-    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pyg-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torch_sparse = [
-    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pyg-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torch_cluster = [
-    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pyg-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torch_spline_conv = [
-    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pyg-cu121", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 # ============================================================
@@ -125,14 +132,14 @@ packages = ["ntl_graph_accel"]
 # ============================================================
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 
