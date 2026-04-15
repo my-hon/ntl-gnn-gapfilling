@@ -88,8 +88,11 @@ echo "PyTorch 版本: $TORCH_VER (系列: $TORCH_SERIES)"
 echo "安装 PyTorch Geometric..."
 pip install torch_geometric
 
+# 注意: PyG wheel URL 需要三位版本号 (如 torch-2.5.0+cu121)
+TORCH_WHEEL_VER=$(python -c "import torch; v=torch.__version__.split('+')[0].split('.'); print(f'{v[0]}.{v[1]}.{v[2]}')")
+echo "PyG wheel 版本: torch-${TORCH_WHEEL_VER}+cu121"
 pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv \
-    -f "https://data.pyg.org/whl/torch-${TORCH_SERIES}+cu121.html" \
+    -f "https://data.pyg.org/whl/torch-${TORCH_WHEEL_VER}+cu121.html" \
     || echo "PyG 扩展库部分安装失败（核心功能仍可用）"
 
 # 安装其他依赖
@@ -108,7 +111,7 @@ print(f'CUDA 可用:     {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'CUDA 版本:     {torch.version.cuda}')
     print(f'GPU:           {torch.cuda.get_device_name(0)}')
-    print(f'GPU 显存:      {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB')
+    print(f'GPU 显存:      {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB')
 
 try:
     import torch_geometric
