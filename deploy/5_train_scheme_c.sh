@@ -67,8 +67,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger('scheme_c_train')
 
-SKIP_BUILD = $SKIP_BUILD
-BUILD_ONLY = $BUILD_ONLY
+SKIP_BUILD = $SKIP_BUILD == 'true'
+BUILD_ONLY = $BUILD_ONLY == 'true'
 GRAPH_CACHE_DIR = '$GRAPH_CACHE_DIR'
 OUTPUT_BASE = '$OUTPUT_BASE'
 
