@@ -26,9 +26,9 @@ ntl-gnn-gapfilling/
 │   └── main.py                   # CLI 入口
 │
 ├── adaptive_graph/               # 自适应图结构探索方案
-│   ├── 方案A_quality_adaptive_nodes/    # 质量驱动自适应节点数
-│   ├── 方案B_dynamic_edge_construction/ # 空间异质性感知动态连边
-│   └── 方案C_attention_graph_learning/  # 注意力图结构学习
+│   ├── scheme_a_quality_adaptive_nodes/    # 质量驱动自适应节点数
+│   ├── scheme_b_dynamic_edge_construction/ # 空间异质性感知动态连边
+│   └── scheme_c_attention_graph_learning/  # 注意力图结构学习
 │
 ├── deploy/                       # 一键部署脚本（Featurize 平台）
 │   ├── 1_setup_env.sh            # 环境配置（conda + PyTorch + PyG）

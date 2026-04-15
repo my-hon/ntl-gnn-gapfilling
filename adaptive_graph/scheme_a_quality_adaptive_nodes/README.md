@@ -103,7 +103,7 @@ remainder = N_adaptive % num_regions
 
 ```python
 import numpy as np
-from adaptive_graph.方案A_quality_adaptive_nodes import (
+from adaptive_graph.scheme_a_quality_adaptive_nodes import (
     ConfigA, GraphBuilderA
 )
 
@@ -141,7 +141,7 @@ from ntl_graph_accel_v2 import Config, GraphBuilder
 builder_v2 = GraphBuilder(config_v2, data, valid_mask)
 
 # 方案A 用法（接口兼容）
-from adaptive_graph.方案A_quality_adaptive_nodes import ConfigA, GraphBuilderA
+from adaptive_graph.scheme_a_quality_adaptive_nodes import ConfigA, GraphBuilderA
 builder_a = GraphBuilderA(config_a, data, valid_mask)
 
 # 输出的 SubGraph 结构完全相同
@@ -174,7 +174,7 @@ config.quality.scale_slope = 1.5  # 更陡峭的缩放曲线
 ## 文件结构
 
 ```
-方案A_quality_adaptive_nodes/
+scheme_a_quality_adaptive_nodes/
   __init__.py           # 包入口，导出核心类
   config_a.py           # 方案A配置（继承v2，增加质量自适应参数）
   adaptive_selector.py  # 自适应节点数选择器（Numba JIT加速）

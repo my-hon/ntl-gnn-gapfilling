@@ -23,7 +23,7 @@
 ## 文件结构
 
 ```
-方案C_attention_graph_learning/
+scheme_c_attention_graph_learning/
 ├── __init__.py          # 包入口，导出所有公共接口
 ├── config_c.py          # 方案C配置（数据、图构建、可学习图结构、GNN模型）
 ├── learnable_graph.py   # 可学习图结构模块（PyTorch nn.Module）
@@ -89,7 +89,7 @@
 
 ```python
 import numpy as np
-from 方案C_attention_graph_learning import ConfigC, GraphBuilderC
+from scheme_c_attention_graph_learning import ConfigC, GraphBuilderC
 
 # 配置
 config = ConfigC()
@@ -110,7 +110,7 @@ subgraphs = builder.build_batch(positions)
 ### 训练阶段
 
 ```python
-from 方案C_attention_graph_learning import (
+from scheme_c_attention_graph_learning import (
     ConfigC, AttentionGraphModel, Trainer, GraphDatasetC
 )
 
@@ -141,7 +141,7 @@ predictions = trainer.predict(test_loader)
 方案C 可以直接加载 v2 构建的 SubGraph 数据（无候选池信息时自动回退）：
 
 ```python
-from 方案C_attention_graph_learning import GraphDatasetC, SubGraphC
+from scheme_c_attention_graph_learning import GraphDatasetC, SubGraphC
 
 # 从 v2 SubGraph 转换
 subgraph_c = SubGraphC.from_v2_subgraph(v2_subgraph)

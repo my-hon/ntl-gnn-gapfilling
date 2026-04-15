@@ -18,7 +18,7 @@
   - graph_builder_b.py       : 方案B图构建器（与 v2 SubGraph 接口兼容）
 
 使用示例：
-    >>> from adaptive_graph.方案B_dynamic_edge_construction import (
+    >>> from adaptive_graph.scheme_b_dynamic_edge_construction import (
     ...     ConfigB, GraphBuilderB
     ... )
     >>> config = ConfigB()

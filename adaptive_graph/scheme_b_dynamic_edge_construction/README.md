@@ -51,7 +51,7 @@ edge_attr = w_spatial * spatial_offset + w_temporal * temporal_offset
 ## 模块结构
 
 ```
-方案B_dynamic_edge_construction/
+scheme_b_dynamic_edge_construction/
 ├── __init__.py                # 包入口，导出核心类
 ├── config_b.py                # 方案B配置（含异质性参数）
 ├── heterogeneity_analyzer.py  # 空间异质性分析器（Numba JIT）
@@ -108,7 +108,7 @@ edge_attr = w_spatial * spatial_offset + w_temporal * temporal_offset
 
 ```python
 import numpy as np
-from adaptive_graph.方案B_dynamic_edge_construction import ConfigB, GraphBuilderB
+from adaptive_graph.scheme_b_dynamic_edge_construction import ConfigB, GraphBuilderB
 
 # 创建配置
 config = ConfigB()
@@ -157,7 +157,7 @@ print(f"  平均边数: {analysis['edge_count_stats']['mean']:.1f}")
 ### 异质性分析器独立使用
 
 ```python
-from adaptive_graph.方案B_dynamic_edge_construction import HeterogeneityAnalyzer
+from adaptive_graph.scheme_b_dynamic_edge_construction import HeterogeneityAnalyzer
 
 analyzer = HeterogeneityAnalyzer(
     cube_radius=5, h_threshold=0.25, h_scale=10.0, min_valid=8

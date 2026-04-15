@@ -403,8 +403,8 @@ sys.path.insert(0, '$SCRIPT_DIR')
 
 try:
     import numpy as np
-    from adaptive_graph.方案A_quality_adaptive_nodes.config_a import ConfigA
-    from adaptive_graph.方案A_quality_adaptive_nodes.graph_builder_a import GraphBuilderA
+    from adaptive_graph.scheme_a_quality_adaptive_nodes.config_a import ConfigA
+    from adaptive_graph.scheme_a_quality_adaptive_nodes.graph_builder_a import GraphBuilderA
 
     config = ConfigA()
     config.data.data_shape = (366, 476, 520)
@@ -478,8 +478,8 @@ sys.path.insert(0, '$SCRIPT_DIR')
 
 try:
     import numpy as np
-    from adaptive_graph.方案B_dynamic_edge_construction.config_b import ConfigB
-    from adaptive_graph.方案B_dynamic_edge_construction.graph_builder_b import GraphBuilderB
+    from adaptive_graph.scheme_b_dynamic_edge_construction.config_b import ConfigB
+    from adaptive_graph.scheme_b_dynamic_edge_construction.graph_builder_b import GraphBuilderB
 
     config = ConfigB()
     config.data.data_shape = (366, 476, 520)
@@ -557,8 +557,8 @@ sys.path.insert(0, '$SCRIPT_DIR')
 try:
     import torch
     import numpy as np
-    from adaptive_graph.方案C_attention_graph_learning.config_c import ConfigC
-    from adaptive_graph.方案C_attention_graph_learning.graph_builder_c import GraphBuilderC
+    from adaptive_graph.scheme_c_attention_graph_learning.config_c import ConfigC
+    from adaptive_graph.scheme_c_attention_graph_learning.graph_builder_c import GraphBuilderC
 
     config = ConfigC()
     config.data.data_shape = (366, 476, 520)
@@ -609,7 +609,7 @@ try:
     print()
     print('  ---- GNN 训练演示（10 个 epoch）----')
     try:
-        from adaptive_graph.方案C_attention_graph_learning.model_c import (
+        from adaptive_graph.scheme_c_attention_graph_learning.model_c import (
             AttentionGraphModel, Trainer, GraphDatasetC
         )
 

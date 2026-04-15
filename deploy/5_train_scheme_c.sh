@@ -37,7 +37,7 @@ echo ""
 cd "$PROJECT_DIR"
 git pull
 
-python "$PROJECT_DIR/adaptive_graph/方案C_attention_graph_learning/train_scheme_c.py" \
+python "$PROJECT_DIR/adaptive_graph/scheme_c_attention_graph_learning/train_scheme_c.py" \
     --input "$NTL_DATA" \
     --quality "$QUALITY_DATA" \
     --output "$OUTPUT_BASE" \

@@ -97,8 +97,8 @@ import sys, time, os, numpy as np
 sys.path.insert(0, '$PROJECT_DIR')
 
 try:
-    from adaptive_graph.方案A_quality_adaptive_nodes.config_a import ConfigA
-    from adaptive_graph.方案A_quality_adaptive_nodes.graph_builder_a import GraphBuilderA
+    from adaptive_graph.scheme_a_quality_adaptive_nodes.config_a import ConfigA
+    from adaptive_graph.scheme_a_quality_adaptive_nodes.graph_builder_a import GraphBuilderA
 
     config = ConfigA()
     config.input_path = '$NTL_DATA'
@@ -164,8 +164,8 @@ import sys, time, os, numpy as np
 sys.path.insert(0, '$PROJECT_DIR')
 
 try:
-    from adaptive_graph.方案B_dynamic_edge_construction.config_b import ConfigB
-    from adaptive_graph.方案B_dynamic_edge_construction.graph_builder_b import GraphBuilderB
+    from adaptive_graph.scheme_b_dynamic_edge_construction.config_b import ConfigB
+    from adaptive_graph.scheme_b_dynamic_edge_construction.graph_builder_b import GraphBuilderB
 
     config = ConfigB()
     config.input_path = '$NTL_DATA'
@@ -246,8 +246,8 @@ sys.path.insert(0, '$PROJECT_DIR')
 
 try:
     import torch
-    from adaptive_graph.方案C_attention_graph_learning.config_c import ConfigC
-    from adaptive_graph.方案C_attention_graph_learning.graph_builder_c import GraphBuilderC
+    from adaptive_graph.scheme_c_attention_graph_learning.config_c import ConfigC
+    from adaptive_graph.scheme_c_attention_graph_learning.graph_builder_c import GraphBuilderC
 
     config = ConfigC()
     config.data.data_shape = (366, 560, 666)

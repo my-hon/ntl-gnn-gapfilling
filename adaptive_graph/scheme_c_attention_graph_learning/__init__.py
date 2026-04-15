@@ -18,7 +18,7 @@
   - model_c.py: GNN 训练模型（GATv2 + 可学习图结构，完整训练/推理接口）
 
 使用示例：
-  >>> from 方案C_attention_graph_learning import ConfigC, GraphBuilderC, AttentionGraphModel, Trainer, GraphDatasetC
+  >>> from scheme_c_attention_graph_learning import ConfigC, GraphBuilderC, AttentionGraphModel, Trainer, GraphDatasetC
   >>> config = ConfigC()
   >>> # 图构建阶段
   >>> builder = GraphBuilderC(config, data, valid_mask)
