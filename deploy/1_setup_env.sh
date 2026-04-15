@@ -12,11 +12,22 @@ echo "========================================"
 echo "  步骤1: 创建 conda 环境 (Python 3.11)"
 echo "========================================"
 
-# 配置阿里云镜像
-conda config --add channels https://mirrors.aliyun.com/conda/pkgs/main/
-conda config --add channels https://mirrors.aliyun.com/conda/pkgs/r/
-conda config --add channels https://mirrors.aliyun.com/conda/pkgs/msys2/
-conda config --set show_channel_urls yes
+# 配置清华镜像（阿里云 conda 镜像不完整）
+cat > ~/.condarc << 'EOF'
+channels:
+  - defaults
+show_channel_urls: true
+default_channels:
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/msys2
+custom_channels:
+  conda-forge: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
+  pytorch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
+EOF
+
+echo "已配置清华 conda 镜像"
+cat ~/.condarc
 
 # 创建环境（如果已存在则跳过）
 if conda env list | grep -q "^ntl "; then
@@ -66,9 +77,7 @@ echo "========================================"
 # 使用清华镜像安装 PyTorch (cu121)
 echo "安装 PyTorch (CUDA 12.1)..."
 pip install torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cu121 \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    --trusted-host pypi.tuna.tsinghua.edu.cn
+    --index-url https://download.pytorch.org/whl/cu121
 
 # 获取 PyTorch 版本
 TORCH_VER=$(python -c "import torch; print(torch.__version__.split('+')[0])")
@@ -77,22 +86,15 @@ echo "PyTorch 版本: $TORCH_VER (系列: $TORCH_SERIES)"
 
 # 安装 PyG
 echo "安装 PyTorch Geometric..."
-pip install torch_geometric \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    --trusted-host pypi.tuna.tsinghua.edu.cn
+pip install torch_geometric
 
 pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv \
     -f "https://data.pyg.org/whl/torch-${TORCH_SERIES}+cu121.html" \
-    --no-deps \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    --trusted-host pypi.tuna.tsinghua.edu.cn \
     || echo "PyG 扩展库部分安装失败（核心功能仍可用）"
 
 # 安装其他依赖
 echo "安装其他依赖..."
-pip install numpy scipy numba tqdm rasterio \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    --trusted-host pypi.tuna.tsinghua.edu.cn
+pip install numpy scipy numba tqdm rasterio
 
 echo ""
 echo "========================================"
