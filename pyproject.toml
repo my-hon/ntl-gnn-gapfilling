@@ -1,0 +1,141 @@
+[project]
+name = "ntl-graph-accel"
+version = "1.0.0"
+description = "GNN-based Nighttime Light data gap-filling with accelerated subgraph generation"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "NTL-GNN Research" }
+]
+keywords = ["gnn", "nighttime-light", "remote-sensing", "graph-neural-network", "gap-filling"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # ---- PyTorch (CUDA 12.4) ----
+    "torch>=2.6.0,<2.7.0",
+    "torchvision>=0.21.0,<0.22.0",
+    "torchaudio>=2.6.0,<2.7.0",
+
+    # ---- PyG (PyTorch Geometric) ----
+    "torch_geometric",
+    "torch_scatter",
+    "torch_sparse",
+    "torch_cluster",
+    "torch_spline_conv",
+
+    # ---- 数据处理 ----
+    "numpy>=1.26.0",
+    "scipy>=1.12.0",
+    "pandas>=2.2.0",
+
+    # ---- 可视化与日志 ----
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+viz = [
+    "matplotlib>=3.9.0",
+    "seaborn>=0.13.0",
+]
+
+[project.scripts]
+ntl-graph-build = "ntl_graph_accel.main:main"
+
+# ============================================================
+# uv 配置
+# ============================================================
+
+[tool.uv]
+# 开启 uv 项目管理
+managed = true
+
+# ---- PyTorch CUDA 12.4 索引 ----
+# PyTorch 的 CUDA wheel 托管在官方独立索引上，需要显式声明
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+# ---- PyG 索引 ----
+# PyG 的 wheel 与 PyTorch 版本强绑定，需要从 data.pyg.org 安装匹配版本
+# 注意:
+#   1. URL 中的 torch 版本需与 dependencies 中的 torch 版本对应
+#   2. format = "flat" 是关键！data.pyg.org 的页面是纯文件列表而非 PEP 503 标准索引，
+#      不加此选项 uv 会按 PEP 503 解析导致 403 Forbidden
+[[tool.uv.index]]
+name = "pyg-cu124"
+url = "https://data.pyg.org/whl/torch-2.6.0+cu124.html"
+explicit = true
+format = "flat"
+
+# ---- 源指定：告诉 uv 从哪个索引安装哪些包 ----
+[tool.uv.sources]
+# PyTorch 核心包从 CUDA 12.4 索引安装（仅 Linux/Windows，macOS 回退 PyPI）
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+# PyG 及其扩展包从 PyG 索引安装（仅 Linux/Windows）
+torch_geometric = [
+    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torch_scatter = [
+    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torch_sparse = [
+    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torch_cluster = [
+    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torch_spline_conv = [
+    { index = "pyg-cu124", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+# ============================================================
+# 构建系统
+# ============================================================
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ntl_graph_accel"]
+
+# ============================================================
+# 工具配置
+# ============================================================
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

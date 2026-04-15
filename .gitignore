@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Numba JIT 编译缓存
+*.nbi
+*.nbc
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# uv
+.python-version
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 数据与缓存（大文件不纳入版本控制）
+*.npy
+*.npz
+*.pkl
+*.h5
+*.hdf5
+*.tif
+*.tiff
+graph_cache*/
+graph_cache_v2*/
+output_graphs*/
+output_graphs_v2*/
+
+# 上传文件
+.uploads/
+
+# 临时文件
+*.tmp
+*.log
+*.bak
