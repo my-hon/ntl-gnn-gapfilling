@@ -24,6 +24,7 @@ from .graph_builder import GraphBuilder
 
 
 def setup_logging(output_dir):
+    os.makedirs(output_dir, exist_ok=True)
     log_file = os.path.join(output_dir, f"build_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
     logging.basicConfig(
         level=logging.INFO,
