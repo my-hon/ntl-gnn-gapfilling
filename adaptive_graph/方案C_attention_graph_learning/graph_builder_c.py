@@ -371,7 +371,7 @@ class GraphBuilderC:
         from .learnable_graph import LearnableNodeSelector
 
         self.mlp_selector = LearnableNodeSelector(
-            input_dim=self.graph_cfg.mlp_hidden_dim,
+            input_dim=4,  # (dt, dh, dw, value)
             hidden_dim=self.graph_cfg.mlp_hidden_dim,
             output_dim=16,
             num_layers=self.graph_cfg.mlp_num_layers,

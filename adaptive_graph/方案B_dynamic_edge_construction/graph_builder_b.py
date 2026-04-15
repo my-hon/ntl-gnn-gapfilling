@@ -4,11 +4,10 @@
 空间异质性感知的动态连边图构建器。
 
 与 v2 GraphBuilder 的区别：
-  1. 节点选择：复用 v2 的 _select_nodes_numba（逻辑不变）
-  2. 边构建：使用方案B的 _build_edges_dynamic_with_heterogeneity 替代 v2 的 _build_edges_numba
-  3. 异质性分析：在边构建前自动计算局部异质性指数
-  4. 动态权重：根据异质性指数动态调整边属性和连接策略
-  5. SubGraph 接口：完全兼容 v2 的 SubGraph 数据结构
+  1. 节点选择 + 边构建：复用 v2 的 GraphBuilder（round-robin + 三种边类型）
+  2. 异质性分析：在图构建后计算局部异质性指数
+  3. 动态权重：根据异质性指数记录 w_spatial, w_temporal
+  4. SubGraph 接口：扩展了异质性字段，基础接口兼容
 
 灵感来源：
   - Graph WaveNet (arXiv:1906.00121): 自适应邻接矩阵
@@ -20,28 +19,18 @@ import logging
 from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from ntl_graph_accel_v2.config import Config
-from ntl_graph_accel_v2.bresenham_lut import BresenhamLUT
-from ntl_graph_accel_v2.graph_cache import GraphCache, GraphTemplate
-from ntl_graph_accel_v2.jit_kernels import (
-    _select_nodes_numba,
-    _count_region_valid_numba,
-)
+from ntl_graph_accel_v2.config import Config as V2Config, GraphConfig
+from ntl_graph_accel_v2.graph_builder import GraphBuilder
 
 from .config_b import ConfigB
 from .heterogeneity_analyzer import HeterogeneityAnalyzer
-from .dynamic_edge_builder import DynamicEdgeBuilder
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SubGraph:
-    """子图数据结构（与 v2 完全兼容）
+    """子图数据结构（与 v2 兼容）
 
     方案B额外记录了异质性信息，但保持基础接口不变。
     """
@@ -82,18 +71,13 @@ class GraphBuilderB:
     方案B：空间异质性感知的动态连边图构建器。
 
     工作流程：
-      1. 对每个中心位置，裁剪时空子立方体
-      2. 自适应窗口扩展（复用 v2 逻辑）
-      3. Numba JIT 节点选择（复用 v2 的 _select_nodes_numba）
-      4. 计算局部异质性指数 H = std(NTL) / mean(NTL)
-      5. 根据异质性计算动态时空权重 w_spatial, w_temporal
-      6. 使用动态权重构建边（方案B核心改进）
-         - 高异质性：放松 Bresenham 截断，增加空间近邻连接
-         - 低异质性：扩展时序连接窗口
+      1. 对每个中心位置，使用 v2 GraphBuilder 构建基础图
+      2. 计算局部异质性指数 H = std(NTL) / mean(NTL)
+      3. 根据异质性计算动态时空权重 w_spatial, w_temporal
+      4. 返回带有异质性扩展字段的 SubGraph
 
     与 v2 GraphBuilder 的接口差异：
       - 构造函数接受 ConfigB（而非 Config）
-      - 边构建使用 DynamicEdgeBuilder（而非 v2 的 _build_edges_numba）
       - SubGraph 包含异质性扩展字段（但基础接口兼容）
     """
 
@@ -115,22 +99,11 @@ class GraphBuilderB:
 
         het_cfg = config.heterogeneity
 
-        # Bresenham 查找表（复用 v2）
-        self.lut: Optional[BresenhamLUT] = None
-        if config.accel.bresenham_lookup:
-            self.lut = BresenhamLUT(max_radius=config.graph.max_radius)
-            self.lut.get_or_build(config.cache_dir)
+        # ---- 创建 v2 GraphBuilder ----
+        v2_config = self._make_v2_config(config)
+        self.v2_builder = GraphBuilder(v2_config, data)
 
-        # 缓存（复用 v2）
-        self.cache: Optional[GraphCache] = None
-        if config.accel.use_cache:
-            self.cache = GraphCache(
-                cache_dir=config.cache_dir,
-                max_size=config.accel.cache_max_size,
-                quantization_step=config.accel.cache_quantization
-            )
-
-        # 异质性分析器
+        # ---- 异质性分析器 ----
         self.heterogeneity_analyzer = HeterogeneityAnalyzer(
             cube_radius=het_cfg.heterogeneity_cube_radius,
             h_threshold=het_cfg.h_threshold,
@@ -138,48 +111,22 @@ class GraphBuilderB:
             min_valid=het_cfg.min_valid_for_heterogeneity,
         )
 
-        # 动态边构建器
-        self.dynamic_edge_builder = DynamicEdgeBuilder(
-            h_threshold=het_cfg.h_threshold,
-            h_scale=het_cfg.h_scale,
-            spatial_boost=het_cfg.high_het_spatial_boost,
-            temporal_extend=het_cfg.low_het_temporal_extend,
-            min_valid=het_cfg.min_valid_for_heterogeneity,
+    @staticmethod
+    def _make_v2_config(config: ConfigB) -> V2Config:
+        """将 ConfigB 转换为 v2 Config"""
+        return V2Config(
+            data=config.data,
+            graph=GraphConfig(
+                search_node=config.graph.search_node,
+                ext_range=config.graph.ext_range,
+                max_ext=config.graph.max_ext,
+                num_regions=config.graph.num_regions,
+            ),
+            accel=config.accel,
+            output_dir=config.output_dir,
+            cache_dir=config.cache_dir,
+            seed=config.seed,
         )
-
-        # 预热 Numba JIT
-        if config.accel.use_numba:
-            logger.info("[方案B] 预热 Numba JIT 编译...")
-            self._warmup_jit()
-            logger.info("[方案B] Numba JIT 编译完成")
-
-    def _warmup_jit(self):
-        """用小数据触发所有 Numba JIT 编译"""
-        tiny_valid = np.ones((5, 5, 5), dtype=np.bool_)
-        tiny_data = np.random.rand(5, 5, 5).astype(np.float32)
-
-        # 预热 v2 的节点选择内核
-        _select_nodes_numba(tiny_valid, tiny_data, 4, 6)
-
-        # 预热方案B的异质性分析内核
-        from .heterogeneity_analyzer import _compute_heterogeneity_for_cube
-        _compute_heterogeneity_for_cube(
-            tiny_data, tiny_valid,
-            self.config.heterogeneity.min_valid_for_heterogeneity,
-            self.config.heterogeneity.h_threshold,
-            self.config.heterogeneity.h_scale
-        )
-
-        # 预热方案B的动态边构建内核
-        tiny_offsets = np.array([[0,0,0],[1,0,0],[0,1,0],[0,0,1]], dtype=np.int32)
-        if self.lut is not None and self.lut.lut_array is not None:
-            from .dynamic_edge_builder import _build_edges_dynamic_numba
-            _build_edges_dynamic_numba(
-                tiny_offsets, tiny_valid,
-                self.lut.lut_array, self.lut.lut_lengths, self.lut.max_radius,
-                0.5, 0.5,  # w_spatial, w_temporal
-                1.5, 3     # spatial_boost, temporal_extend
-            )
 
     def build_single(self, tc: int, hc: int, wc: int) -> Optional[SubGraph]:
         """
@@ -195,103 +142,73 @@ class GraphBuilderB:
         SubGraph 或 None
             构建成功返回 SubGraph，失败返回 None
         """
-        graph_cfg = self.config.graph
-        het_cfg = self.config.heterogeneity
-
-        # 尝试缓存（方案B暂不缓存，因为异质性可能因数据不同而变化）
-        # 但如果缓存命中且结构相同，可以复用拓扑
-        # TODO: 实现异质性感知的缓存策略
-
-        # 自适应窗口扩展（与 v2 逻辑一致）
-        radius = graph_cfg.initial_radius
-        cube, valid_cube = self._crop_cube(tc, hc, wc, radius)
-
-        while True:
-            counts = _count_region_valid_numba(valid_cube, graph_cfg.num_regions)
-            q, rem = divmod(graph_cfg.num_nodes, graph_cfg.num_regions)
-            min_required = q + (1 if rem > 0 else 0)
-
-            if counts.min() >= min_required:
-                break
-
-            radius += 1
-            if radius > graph_cfg.max_radius:
-                return None
-            cube, valid_cube = self._crop_cube(tc, hc, wc, radius)
-
-        # Numba JIT 节点选择（复用 v2）
-        offsets, features, regions, actual_n = _select_nodes_numba(
-            valid_cube, cube, graph_cfg.num_nodes, graph_cfg.num_regions
-        )
-        if actual_n < 2:
+        # 使用 v2 GraphBuilder 构建基础图
+        result = self.v2_builder.build_single(tc, hc, wc)
+        if result is None:
             return None
 
-        # ---- 方案B核心：异质性感知的动态边构建 ----
-        if self.lut is not None and self.lut.lut_array is not None:
-            # 使用合并的异质性+边构建内核（单次 Numba 调用）
-            from .dynamic_edge_builder import _build_edges_dynamic_with_heterogeneity
+        # ---- 方案B核心：计算异质性指数 ----
+        H_val, ws, wt = self._compute_heterogeneity(tc, hc, wc)
 
-            edge_src, edge_dst, edge_attrs, num_edges, H_val, ws, wt = \
-                _build_edges_dynamic_with_heterogeneity(
-                    offsets, valid_cube, cube,
-                    self.lut.lut_array, self.lut.lut_lengths, self.lut.max_radius,
-                    het_cfg.h_threshold,
-                    het_cfg.h_scale,
-                    het_cfg.high_het_spatial_boost,
-                    het_cfg.low_het_temporal_extend,
-                    het_cfg.min_valid_for_heterogeneity,
-                )
-        else:
-            # 无 Bresenham 查找表时的回退
-            from .dynamic_edge_builder import _build_edges_dynamic_with_heterogeneity
-
-            edge_src, edge_dst, edge_attrs, num_edges, H_val, ws, wt = \
-                _build_edges_dynamic_with_heterogeneity(
-                    offsets, valid_cube, cube,
-                    np.zeros((1, 1, 1, 1, 3), dtype=np.int16),
-                    np.zeros((1, 1, 1), dtype=np.int16),
-                    0,
-                    het_cfg.h_threshold,
-                    het_cfg.h_scale,
-                    het_cfg.high_het_spatial_boost,
-                    het_cfg.low_het_temporal_extend,
-                    het_cfg.min_valid_for_heterogeneity,
-                )
-
-        # 归一化
-        features = features / self.config.data.feature_scale
-        edge_attrs = edge_attrs / self.config.data.edge_scale
+        # 从 v2 dict 提取边信息
+        edge_index = result['edge_index']  # (2, E)
+        edge_src = edge_index[0].astype(np.int64)
+        edge_dst = edge_index[1].astype(np.int64)
+        edge_attrs = result['edge_attr']
+        node_features = result['node_features']
 
         center_value = float(self.data[tc, hc, wc])
 
         # 构建方案B的 SubGraph（包含异质性信息）
         subgraph = SubGraph(
             center_pos=np.array([tc, hc, wc], dtype=np.int32),
-            node_features=features.astype(np.float32),
-            edge_index_src=edge_src.astype(np.int64),
-            edge_index_dst=edge_dst.astype(np.int64),
-            edge_attrs=edge_attrs.astype(np.float32),
+            node_features=node_features,
+            edge_index_src=edge_src,
+            edge_index_dst=edge_dst,
+            edge_attrs=edge_attrs,
             center_value=center_value,
-            num_nodes=actual_n,
+            num_nodes=node_features.shape[0],
             heterogeneity_index=H_val,
             w_spatial=ws,
             w_temporal=wt,
         )
 
-        # 存入缓存（使用 v2 的 GraphTemplate，忽略异质性信息）
-        if self.cache is not None:
-            template = GraphTemplate(
-                node_offsets=offsets.copy(),
-                edge_src=edge_src.copy(),
-                edge_dst=edge_dst.copy(),
-                edge_attrs=edge_attrs.copy(),
-                self_loop_indices=np.arange(actual_n, dtype=np.int64),
-                region_counts=np.array([np.sum(regions == i) for i in range(graph_cfg.num_regions)]),
-                radius=radius
-            )
-            self.cache.put(tc, hc, wc, template)
-
         return subgraph
+
+    def _compute_heterogeneity(self, tc: int, hc: int, wc: int) -> Tuple[float, float, float]:
+        """
+        计算指定位置的异质性指数和动态权重。
+
+        Parameters
+        ----------
+        tc, hc, wc : int
+            中心位置坐标
+
+        Returns
+        -------
+        H_val : float
+            异质性指数
+        w_spatial : float
+            空间权重
+        w_temporal : float
+            时序权重
+        """
+        het_cfg = self.config.heterogeneity
+        radius = het_cfg.heterogeneity_cube_radius
+
+        # 裁剪局部立方体
+        t0 = max(0, tc - radius)
+        t1 = min(self.T, tc + radius + 1)
+        h0 = max(0, hc - radius)
+        h1 = min(self.H, hc + radius + 1)
+        w0 = max(0, wc - radius)
+        w1 = min(self.W, wc + radius + 1)
+
+        cube = self.data[t0:t1, h0:h1, w0:w1].copy()
+        valid_cube = self.valid_mask[t0:t1, h0:h1, w0:w1].copy()
+
+        H_val, ws, wt = self.heterogeneity_analyzer.analyze_cube(cube, valid_cube)
+        return H_val, ws, wt
 
     def build_batch(self, positions: np.ndarray) -> List[SubGraph]:
         """
@@ -323,10 +240,8 @@ class GraphBuilderB:
                     het_stats['invalid'] += 1
 
             if (i + 1) % 10000 == 0:
-                hr = self.cache.get_hit_rate() if self.cache else 0
                 logger.info(
                     f"[方案B] 进度: {i+1}/{total}, 已构建: {len(graphs)}, "
-                    f"缓存命中率: {hr:.1%}, "
                     f"高异质性: {het_stats['high']}, "
                     f"低异质性: {het_stats['low']}, "
                     f"无效: {het_stats['invalid']}"
@@ -402,49 +317,3 @@ class GraphBuilderB:
         logger.info(f"  平均边数={analysis['edge_count_stats']['mean']:.1f}")
 
         return graphs, analysis
-
-    def _crop_cube(self, tc, hc, wc, radius):
-        """裁剪时空子立方体（与 v2 逻辑一致）"""
-        t0 = max(0, tc - radius)
-        t1 = min(self.T, tc + radius + 1)
-        h0 = max(0, hc - radius)
-        h1 = min(self.H, hc + radius + 1)
-        w0 = max(0, wc - radius)
-        w1 = min(self.W, wc + radius + 1)
-        return (self.data[t0:t1, h0:h1, w0:w1].copy(),
-                self.valid_mask[t0:t1, h0:h1, w0:w1].copy())
-
-    def _build_from_template(self, tc, hc, wc, template):
-        """从缓存模板快速构建（与 v2 逻辑一致，但添加异质性信息）"""
-        radius = template.radius
-        cube, _ = self._crop_cube(tc, hc, wc, radius)
-        ct = cube.shape[0] // 2
-        ch = cube.shape[1] // 2
-        cw = cube.shape[2] // 2
-
-        features = np.array([
-            cube[off[0] + ct, off[1] + ch, off[2] + cw]
-            for off in template.node_offsets
-        ], dtype=np.float32) / self.config.data.feature_scale
-
-        # 计算异质性信息（即使从缓存构建也重新计算）
-        valid_cube = self.valid_mask[
-            max(0, tc - radius):min(self.T, tc + radius + 1),
-            max(0, hc - radius):min(self.H, hc + radius + 1),
-            max(0, wc - radius):min(self.W, wc + radius + 1)
-        ].copy()
-
-        H_val, ws, wt = self.heterogeneity_analyzer.analyze_cube(cube, valid_cube)
-
-        return SubGraph(
-            center_pos=np.array([tc, hc, wc], dtype=np.int32),
-            node_features=features,
-            edge_index_src=template.edge_src.copy(),
-            edge_index_dst=template.edge_dst.copy(),
-            edge_attrs=template.edge_attrs / self.config.data.edge_scale,
-            center_value=float(self.data[tc, hc, wc]),
-            num_nodes=len(template.node_offsets),
-            heterogeneity_index=H_val,
-            w_spatial=ws,
-            w_temporal=wt,
-        )

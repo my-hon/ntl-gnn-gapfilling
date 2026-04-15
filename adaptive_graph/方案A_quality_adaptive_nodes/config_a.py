@@ -105,19 +105,18 @@ class ConfigA:
 
     def to_v2_config(self):
         """
-        转换为 v2 Config（用于复用 v2 的缓存、查找表等基础设施）。
+        转换为 v2 Config（用于复用 v2 的 GraphBuilder）。
 
-        注意：num_nodes 使用基准值，实际自适应在 GraphBuilderA 中处理。
+        注意：search_node 使用基准值，实际自适应在 GraphBuilderA 中处理。
         """
         from ntl_graph_accel_v2.config import GraphConfig
         return V2Config(
             data=self.data,
             graph=GraphConfig(
-                num_nodes=self.graph.num_nodes_base,
-                initial_radius=self.graph.initial_radius,
-                max_radius=self.graph.max_radius,
+                search_node=self.graph.num_nodes_base,
+                ext_range=self.graph.initial_radius,
+                max_ext=self.graph.max_radius,
                 num_regions=self.graph.num_regions,
-                max_bresenham_len=self.graph.max_bresenham_len,
             ),
             accel=self.accel,
             output_dir=self.output_dir,
