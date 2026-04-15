@@ -34,7 +34,7 @@ def setup_logging(output_dir):
     return logging.getLogger(__name__)
 
 
-def _build_graphs_for_positions(builder, positions, desc="构建图"):
+def _build_graphs_for_positions(builder, positions, desc="构建图", log=None):
     """
     为一组位置构建子图，带进度日志。
     """
@@ -44,8 +44,8 @@ def _build_graphs_for_positions(builder, positions, desc="构建图"):
         graph = builder.build_single(int(tc), int(hc), int(wc))
         if graph is not None:
             graphs.append(graph)
-        if (i + 1) % 10000 == 0:
-            logger.info(f"{desc} 进度: {i+1}/{total}, 已构建: {len(graphs)}")
+        if (i + 1) % 10000 == 0 and log:
+            log.info(f"{desc} 进度: {i+1}/{total}, 已构建: {len(graphs)}")
     return graphs
 
 
@@ -85,7 +85,8 @@ def run_train(config):
         t1 = time.time()
         class_graphs = _build_graphs_for_positions(
             builder, positions,
-            desc=f"类别 {class_idx + 1}"
+            desc=f"类别 {class_idx + 1}",
+            log=logger
         )
         build_time = time.time() - t1
 
@@ -147,7 +148,8 @@ def run_predict(config):
         t1 = time.time()
         day_graphs = _build_graphs_for_positions(
             builder, positions,
-            desc=f"Day {day_num + 1}"
+            desc=f"Day {day_num + 1}",
+            log=logger
         )
         build_time = time.time() - t1
 
