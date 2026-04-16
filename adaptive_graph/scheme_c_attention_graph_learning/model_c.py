@@ -1014,6 +1014,7 @@ class Trainer:
             当前 epoch
         """
         path = os.path.join(self.config.model_save_dir, filename)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save({
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
