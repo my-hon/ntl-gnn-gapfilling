@@ -148,7 +148,7 @@ class GATv2Layer(nn.Module):
 
         # 广播计算注意力分数
         # attn: (B, heads, N, N)
-        attn = attn_src.unsqueeze(-1) + attn_dst.unsqueeze(-2) + self.att_bias
+        attn = attn_src.unsqueeze(-1) + attn_dst.unsqueeze(-2) + self.att_bias.unsqueeze(2)
         attn = self.leaky_relu(attn)
 
         # 用邻接矩阵掩码
