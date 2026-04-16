@@ -177,7 +177,7 @@ def train(graphs_path, scheme, output_dir, **train_kwargs):
     from collections import defaultdict
     import torch
     import torch.nn.functional as F
-    from torch.utils.data import DataLoader
+    from torch_geometric.loader import DataLoader
 
     os.makedirs(output_dir, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

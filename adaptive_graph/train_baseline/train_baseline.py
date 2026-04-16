@@ -22,7 +22,8 @@ from collections import defaultdict
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
+from torch_geometric.loader import DataLoader
 
 # 确保项目根目录在 sys.path 中
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
