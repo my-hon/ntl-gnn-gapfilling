@@ -141,16 +141,10 @@ class GATv2Layer(nn.Module):
 
         # GATv2 动态注意力: e_{ij} = a^T LeakyReLU(W h_i || W h_j)
         # 注意力分数 = att_src * h_i + att_dst * h_j + bias
-        if h.shape[-1] != self.att_src.shape[-1]:
-            raise ValueError(
-                f"GATv2Layer dimension mismatch: h head_dim={h.shape[-1]}, "
-                f"att_src dim={self.att_src.shape[-1]}, "
-                f"in_dim={self.in_dim}, out_dim={self.out_dim}, "
-                f"num_heads={self.num_heads}, head_dim={self.head_dim}, "
-                f"x.shape={x.shape}, h.shape={h.shape}"
-            )
-        attn_src = (h * self.att_src).sum(dim=-1)  # (B, heads, N)
-        attn_dst = (h * self.att_dst).sum(dim=-1)  # (B, heads, N)
+        # att_src/att_dst: (1, heads, head_dim) → unsqueeze → (1, heads, 1, head_dim)
+        # h: (B, heads, N, head_dim)
+        attn_src = (h * self.att_src.unsqueeze(2)).sum(dim=-1)  # (B, heads, N)
+        attn_dst = (h * self.att_dst.unsqueeze(2)).sum(dim=-1)  # (B, heads, N)
 
         # 广播计算注意力分数
         # attn: (B, heads, N, N)
