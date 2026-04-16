@@ -18,6 +18,11 @@ import argparse
 
 import numpy as np
 
+# 确保项目根目录在 sys.path 中（支持 -m 模块方式和直接运行）
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 
 # ================================================================
 # 日志配置
@@ -127,8 +132,8 @@ def build_or_load_graphs(
 
     logger.info('[3/5] 构建训练子图...')
 
-    from config_c import ConfigC
-    from graph_builder_c import GraphBuilderC
+    from adaptive_graph.scheme_c_attention_graph_learning.config_c import ConfigC
+    from adaptive_graph.scheme_c_attention_graph_learning.graph_builder_c import GraphBuilderC
 
     config = ConfigC()
     config.data.data_shape = (T, H, W)
@@ -202,8 +207,8 @@ def train_model(train_graphs, val_graphs, output_dir, T, H, W):
     """训练模型"""
     logger.info('[4/5] 创建数据集...')
 
-    from config_c import ConfigC
-    from model_c import (
+    from adaptive_graph.scheme_c_attention_graph_learning.config_c import ConfigC
+    from adaptive_graph.scheme_c_attention_graph_learning.model_c import (
         GraphDatasetC, Trainer, AttentionGraphModel
     )
 
