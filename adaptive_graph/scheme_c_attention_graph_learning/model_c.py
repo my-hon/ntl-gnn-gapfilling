@@ -160,11 +160,10 @@ class GATv2Layer(nn.Module):
         attn = F.softmax(attn, dim=-1)
         attn = self.attn_dropout(attn)
 
-        # 加权聚合
-        # (B, heads, N, head_dim) * (B, heads, N, 1) -> sum
-        out = h * attn.unsqueeze(-1)
-        out = out.sum(dim=2)  # (B, heads, head_dim)
-        out = out.permute(0, 2, 1)  # (B, head_dim, heads)
+        # 加权聚合: torch.matmul 替代逐元素乘法，避免广播问题
+        # attn: (B, heads, N, N), h: (B, heads, N, head_dim)
+        out = torch.matmul(attn, h)  # (B, heads, N, head_dim)
+        out = out.permute(0, 2, 1, 3)  # (B, N, heads, head_dim)
         out = out.reshape(batch_size, num_nodes, self.out_dim)
         out = self.out_dropout(out)
 
